@@ -1,0 +1,5 @@
+out/
+cache/
+broadcast/
+.env
+docs/buildathon/evidence/secrets*

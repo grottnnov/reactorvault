@@ -1,0 +1,200 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.29;
+
+import {Test} from "forge-std/Test.sol";
+import {FuelConverter, FuelBuyer, IFuelSource} from "../src/FuelConverter.sol";
+import {OmniMockSystem} from "./mocks/OmniMockSystem.sol";
+import {IReactive} from "reactive-lib-omni/interfaces/IReactive.sol";
+import {IPayable} from "reactive-lib-omni/interfaces/IPayable.sol";
+import {AbstractCallback} from "reactive-lib-omni/base/AbstractCallback.sol";
+import {AbstractPayer} from "reactive-lib-omni/base/AbstractPayer.sol";
+
+/// @dev Auto-faucet (ADR-v2): the depot's HorizonAlert → a fuel
+///      purchase order. FuelBuyer: delivery guards and a balance clamp.
+///      FuelConverter: level gate, per-block idempotency, cooldown.
+contract MockFaucet is IFuelSource {
+    uint256 public received;
+    address public lastRecipient;
+
+    function request(address recipient) external payable {
+        received += msg.value;
+        lastRecipient = recipient;
+    }
+}
+
+contract FuelConverterTest is Test {
+    address internal constant OMNI_SYSTEM = 0x8888888888888888888888888888888888888888;
+    /// @dev The live Sepolia callback proxy (verified by the 08.11
+    ///      probe) — imitates the real callback deliverer in
+    ///      testLiveDeliveryFromProxy.
+    address internal constant SEPOLIA_PROXY = 0xAa14d9Cd0f788Ca23d11805986C1d8bd035D23b4;
+    uint256 constant T_HORIZON = uint256(keccak256("HorizonAlert(uint256,uint256,uint256,uint8)"));
+
+    OmniMockSystem sys;
+    FuelConverter converter;
+    FuelBuyer buyer;
+    MockFaucet faucet;
+    address fund = makeAddr("fund");
+
+    function setUp() public {
+        OmniMockSystem impl = new OmniMockSystem();
+        vm.etch(OMNI_SYSTEM, address(impl).code);
+        sys = OmniMockSystem(payable(OMNI_SYSTEM));
+
+        // The converter<->buyer circular dependency is broken by
+        // precompute — the order mirrors the live deploy 1:1: the
+        // buyer's future address -> converter (it needs the address)
+        // -> buyer (the converter is already real, goes into immutable).
+        address buyerAddr = _create1(address(this), vm.getNonce(address(this)) + 1);
+        converter = new FuelConverter(fund, buyerAddr, T_HORIZON);
+        buyer = new FuelBuyer(IPayable(payable(SEPOLIA_PROXY)), address(converter), fund);
+        faucet = new MockFaucet();
+
+        assertEq(address(buyer), buyerAddr, "precompute must match live deploy order");
+
+        vm.startPrank(buyer.owner());
+        buyer.setFaucet(faucet);
+        vm.stopPrank();
+
+        converter.init();
+        vm.deal(address(buyer), 1 ether);
+        vm.warp(2 hours);
+    }
+
+    /// @dev The address of a future CREATE deployment (nonce < 0x80):
+    ///      the keccak(rlp([deployer, nonce])) formula — a replacement
+    ///      for vm.computeAddress, absent from this forge-std version.
+    function _create1(address deployer_, uint256 nonce_) internal pure returns (address) {
+        return
+            address(uint160(uint256(keccak256(abi.encodePacked(bytes1(0xd6), bytes1(0x94), deployer_, uint8(nonce_))))));
+    }
+
+    function _horizon(uint8 level, uint256 blockNumber_) internal {
+        vm.prank(OMNI_SYSTEM);
+        converter.react(
+            IReactive.LogRecord({
+                chainId: 11155111,
+                contractAddress: fund,
+                topic0: T_HORIZON,
+                topic1: 0,
+                topic2: 0,
+                topic3: 0,
+                data: abi.encode(uint256(15), 3 ether, 0.2 ether, level),
+                blockNumber: blockNumber_,
+                opCode: 0,
+                blockHash: 0,
+                txHash: 0,
+                logIndex: 0
+            })
+        );
+    }
+
+    function _buyCallback(uint256 blockNumber_) internal {
+        vm.prank(SEPOLIA_PROXY);
+        buyer.buyFuel{value: 0}(address(converter), blockNumber_);
+    }
+
+    /// Init: a single subscription to the depot's horizon.
+    /// The depot lives on Lasna (5318007) — HorizonAlert is emitted
+    /// there; a subscription in chain 11155111 would listen to a
+    /// nonexistent emitter (a live trap caught during W2 deploy prep).
+    function testInitSubscribes() public view {
+        assertEq(sys.subscriptionCount(), 1);
+        (uint256 sChain, address sContract, uint256 sTopic0,,,,) = sys.subscriptions(0);
+        assertEq(sChain, 5318007, "fund lives on Lasna, not Sepolia");
+        assertEq(sContract, fund);
+        assertEq(sTopic0, T_HORIZON);
+    }
+
+    /// Full path: a level-1 escalation → order → callback → the faucet
+    /// received ETH, the recipient is the depot.
+    function testFullBuyPath() public {
+        _horizon(1, 100);
+        assertEq(sys.callbackCount(), 1);
+        (uint256 cChain, address cRec, uint64 cGas, bytes memory cPayload, address cReq) = sys.callbackRequests(0);
+        assertEq(cChain, 11155111);
+        assertEq(cRec, address(buyer));
+        assertEq(cReq, address(converter));
+
+        // Execution — as a live callback: the deliverer is the proxy,
+        // the sender slot is network-injected as the converter.
+        vm.prank(SEPOLIA_PROXY);
+        buyer.buyFuel(address(converter), 100);
+
+        assertEq(faucet.received(), 0.02 ether);
+        assertEq(faucet.lastRecipient(), fund);
+        assertEq(buyer.buysCount(), 1);
+        assertEq(buyer.totalSpentWei(), 0.02 ether);
+    }
+
+    /// Level 0 (stock > 30 days) — no order.
+    function testLevelZeroNoOrder() public {
+        _horizon(0, 100);
+        assertEq(sys.callbackCount(), 0);
+    }
+
+    /// Idempotency: a duplicate escalation of the same block — one order.
+    function testDuplicateBlockSingleOrder() public {
+        _horizon(1, 100);
+        _horizon(1, 100);
+        assertEq(sys.callbackCount(), 1);
+    }
+
+    /// Cooldown: a new escalation of a different block inside the
+    /// window — stay silent.
+    function testCooldownBlocks() public {
+        _horizon(1, 100);
+        vm.warp(block.timestamp + 1 hours);
+        _horizon(2, 200);
+        assertEq(sys.callbackCount(), 1, "cooldown");
+
+        vm.warp(block.timestamp + 12 hours);
+        _horizon(2, 300);
+        assertEq(sys.callbackCount(), 2);
+    }
+
+    /// FuelBuyer: live-delivery guards — the proxy only (msg.sender)
+    /// AND the converter only (the injected sender slot).
+    function testBuyerDeliveryGuards() public {
+        // Right deliverer, wrong sender slot
+        vm.prank(SEPOLIA_PROXY);
+        vm.expectRevert(
+            abi.encodeWithSelector(AbstractCallback.CallbackNotAuthorized.selector, address(0xdead), address(converter))
+        );
+        buyer.buyFuel(address(0xdead), 1);
+
+        // Right sender slot, but the call does not come from the proxy
+        // (directly from the converter)
+        vm.prank(address(converter));
+        vm.expectRevert(abi.encodeWithSelector(AbstractPayer.NotAuthorized.selector, address(converter), SEPOLIA_PROXY));
+        buyer.buyFuel(address(converter), 1);
+    }
+
+    /// FuelBuyer: balance clamp; an empty tank is an honest revert.
+    function testBuyerClampAndEmpty() public {
+        vm.deal(address(buyer), 0.005 ether); // below buyAmount
+        vm.prank(SEPOLIA_PROXY);
+        buyer.buyFuel(address(converter), 1);
+        assertEq(faucet.received(), 0.005 ether, "clamped to balance");
+
+        vm.deal(address(buyer), 0);
+        vm.prank(SEPOLIA_PROXY);
+        vm.expectRevert(FuelBuyer.BuyFailed.selector);
+        buyer.buyFuel(address(converter), 2);
+    }
+
+    /// Live callback delivery (the 08.11 probe canon): the callback
+    /// arrives FROM THE PROXY (msg.sender = the Sepolia proxy), the
+    /// network replaces the first payload slot with the source — the
+    /// converter. This test caught the W2 deploy trap: a
+    /// msg.sender==converter guard rejected live callbacks.
+    function testLiveDeliveryFromProxy() public {
+        _horizon(1, 100);
+        assertEq(sys.callbackCount(), 1);
+
+        vm.prank(SEPOLIA_PROXY);
+        buyer.buyFuel(address(converter), 100);
+        assertEq(faucet.received(), 0.02 ether);
+        assertEq(buyer.buysCount(), 1);
+    }
+}
