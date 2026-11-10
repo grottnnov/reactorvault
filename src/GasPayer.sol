@@ -12,7 +12,7 @@ import {ISystemContract} from "reactive-lib-omni/interfaces/ISystemContract.sol"
 ///         feeds (dropped from the MVP). A ward of the depot: free eyes
 ///         on its own lREACT tank in every react() + a LowGas cry
 ///         (threshold at half the patrol floor — a safety net).
-///         P2 fix: the reserve mirror listens to the EMITTER VaultCore
+///         P2 fix: the reserve mirror listens to the EMITTER GasVault (the battery)
 ///         (GasReserveUpdated), not the executor.
 ///         Idempotency: a processed-set of (chainId, blockNumber, topic0).
 contract GasPayer is AbstractReactive {
@@ -34,7 +34,7 @@ contract GasPayer is AbstractReactive {
     uint64 public lastRefillAt;
 
     /// @notice Mirror of the client's reserve (wei) — GasReserveUpdated
-    ///         from VaultCore.
+    ///         from GasVault (the battery).
     uint256 public reserveWei;
     bool public reserveSeen;
 
@@ -74,7 +74,7 @@ contract GasPayer is AbstractReactive {
     }
 
     function init() external onlyOwner {
-        // P2 fix: the emitter of GasReserveUpdated is VaultCore, not the executor
+        // P2 fix: the emitter of GasReserveUpdated is GasVault, not the executor
         SYSTEM.subscribe(DEST_CHAIN_ID, vault, reserveTopic, REACTIVE_IGNORE, REACTIVE_IGNORE, REACTIVE_IGNORE);
         SYSTEM.subscribe(DEST_CHAIN_ID, executor, ethLowTopic, REACTIVE_IGNORE, REACTIVE_IGNORE, REACTIVE_IGNORE);
     }

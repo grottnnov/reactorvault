@@ -7,7 +7,7 @@ import {OmniMockSystem} from "./mocks/OmniMockSystem.sol";
 import {IReactive} from "reactive-lib-omni/interfaces/IReactive.sol";
 
 /// @dev Cashier v2 (ADR-v2): feed-free tariff (ETH-native), P2 fix (the
-///      reserve subscription targets VaultCore), idempotency, eyes+cry.
+///      reserve subscription targets the GasVault battery), idempotency, eyes+cry.
 contract GasPayerTest is Test {
     address internal constant OMNI_SYSTEM = 0x8888888888888888888888888888888888888888;
 

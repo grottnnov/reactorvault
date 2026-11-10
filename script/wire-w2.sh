@@ -30,7 +30,7 @@ OMNI=0x8888888888888888888888888888888888888888
 set -a; source .env; set +a
 PK=$LASNA_PARITY_A_PRIVATE_KEY
 
-T_DEPOSITED=$(cast keccak 'Deposited(address,uint256,uint256,uint256)')
+T_DEPOSITED=$(cast keccak 'Deposited(address,uint256,uint256)')
 
 sendL() { cast send "$1" "${@:2}" --rpc-url "$RPC_LASNA" --private-key "$PK" --json 2>/dev/null \
   | python3 -c "import json,sys; r=json.load(sys.stdin); print('  tx', r['transactionHash'][:18]+'…', r['status'])"; }
@@ -38,7 +38,7 @@ sendS() { cast send "$1" "${@:2}" --rpc-url "$RPC_SEP" --private-key "$PK" --jso
   | python3 -c "import json,sys; r=json.load(sys.stdin); print('  tx', r['transactionHash'][:18]+'…', r['status'])"; }
 
 echo "== [1] Lasna subscriptions"
-sendL "$W2_RULES" 'initialize(address,uint256,uint256,address,uint256,uint64)' "$W2_VAULT" 11155111 "$T_DEPOSITED" "$W2_EXECUTOR" 11155111 3600
+sendL "$W2_RULES" 'initialize(address,uint256,uint256,address,uint256,uint64)' "$W2_ASSETVAULT" 11155111 "$T_DEPOSITED" "$W2_EXECUTOR" 11155111 3600
 sendL "$W2_GASPAYER" 'init()'
 sendL "$W2_CONVERTER" 'init()'
 sendL "$W2_DOG" 'init()'
@@ -64,8 +64,11 @@ sysL "depot(rx) $W2_FUND       0.15ether" "$W2_FUND" 0.15ether
 sendL "$W2_FUND" --value 0.6ether
 echo "  transfer to depot 0.6 (feeding stock)"
 
-echo "== [4] Sepolia: vault pockets (reserve 20%, treasury 5%, cap 0.05 ETH)"
-sendS "$W2_VAULT" 'setParams(uint32,uint32,uint256)' 2000 500 0.05ether
+echo "== [4] Sepolia: asset vault (treasury 5% → battery), executor wiring"
+sendS "$W2_ASSETVAULT" 'setGasVault(address)' "$W2_GASVAULT"
+sendS "$W2_ASSETVAULT" 'setTreasuryBps(uint32)' 500
+sendS "$W2_ASSETVAULT" 'authorizeExecutor(address)' "$W2_EXECUTOR"
+sendS "$W2_GASVAULT" 'authorizeExecutor(address)' "$W2_EXECUTOR"
 
 echo "== [5] W2 stand status"
 for X in "brain     $W2_RULES" "cashier   $W2_GASPAYER" "converter $W2_CONVERTER" "depot     $W2_FUND" "watchdog  $W2_DOG"; do
@@ -73,6 +76,6 @@ for X in "brain     $W2_RULES" "cashier   $W2_GASPAYER" "converter $W2_CONVERTER
   D=$(cast call "$OMNI" 'debts(address)(uint256)' "$2" --rpc-url "$RPC_LASNA" 2>/dev/null | head -1)
   echo "  $1 $2 bal=$(cast from-wei $B) debt=$D"
 done
-echo "  vault     $W2_VAULT (Sepolia), executor $W2_EXECUTOR, buyer $W2_BUYER"
+echo "  asset vault $W2_ASSETVAULT (Sepolia), battery $W2_GASVAULT, executor $W2_EXECUTOR, buyer $W2_BUYER"
 echo "  depot: ward records = $(cast call "$W2_FUND" 'wardCount()(uint256)' --rpc-url "$RPC_LASNA" 2>/dev/null)"
 echo "next: a live auto-faucet probe + the end-to-end demo (see HANDOFF/evidence)"

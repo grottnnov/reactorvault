@@ -67,11 +67,14 @@ CONV=$(pre "$((N+2))");   echo "  converter N+2  = $CONV"
 FUND=$(pre "$((N+3))");   echo "  depot     N+3  = $FUND  (deploy-w2-fund.sh)"
 DOG=$(pre "$((N+4))");    echo "  watchdog  N+4  = $DOG   (deploy-w2-fund.sh)"
 
-echo "== [2] Sepolia: vault → executor → fuel buyer"
-VAULT=$(dep "$RPC_SEP" VaultCore)
-[ -n "$VAULT" ] || { echo "❌ vault deploy failed"; exit 1; }
-echo "  ✅ vault = $VAULT"
-EXEC=$(dep "$RPC_SEP" Executor "$RULES $PROXY $VAULT $GAS")
+echo "== [2] Sepolia: asset vault → gas vault (battery) → executor → fuel buyer"
+ASSET=$(dep "$RPC_SEP" AssetVault)
+[ -n "$ASSET" ] || { echo "❌ asset vault deploy failed"; exit 1; }
+echo "  ✅ asset vault = $ASSET"
+GASV=$(dep "$RPC_SEP" GasVault)
+[ -n "$GASV" ] || { echo "❌ gas vault deploy failed"; exit 1; }
+echo "  ✅ gas vault = $GASV"
+EXEC=$(dep "$RPC_SEP" Executor "$RULES $PROXY $ASSET $GASV $GAS")
 [ -n "$EXEC" ] || { echo "❌ executor deploy failed"; exit 1; }
 echo "  ✅ executor = $EXEC"
 BUYER=$(dep "$RPC_SEP" FuelConverter:FuelBuyer "$PROXY $CONV $FUND")
@@ -82,13 +85,14 @@ cast send "$BUYER" --value 0.02ether --rpc-url "$RPC_SEP" --private-key "$PK" 2>
 
 echo "== [3] Lasna: brain → cashier → converter (strictly in a row, A's nonce untouchable)"
 mustBe "$(dep "$RPC_LASNA" RulesEngine)" "$RULES" "brain"
-mustBe "$(dep "$RPC_LASNA" GasPayer "$EXEC $VAULT $T_ETH_LOW $T_RESERVE")" "$GAS" "cashier"
+# ADR-EXPANSION §2: the reserve emitter is the battery (GasVault), not the asset vault
+mustBe "$(dep "$RPC_LASNA" GasPayer "$EXEC $GASV $T_ETH_LOW $T_RESERVE")" "$GAS" "cashier"
 mustBe "$(dep "$RPC_LASNA" FuelConverter:FuelConverter "$FUND $BUYER $T_HORIZON")" "$CONV" "converter"
 
 echo "== [4] into .env (W2_*), next step: the depot/watchdog deploy script (expects nonce $((N+3)))"
 upsert() { if grep -q "^$1=" .env 2>/dev/null; then sed -i "s|^$1=.*|$1=$2|" .env; else printf '%s=%s\n' "$1" "$2" >> .env; fi; }
 upsert W2_RULES "$RULES"; upsert W2_GASPAYER "$GAS"; upsert W2_CONVERTER "$CONV"
 upsert W2_FUND "$FUND";   upsert W2_DOG "$DOG"
-upsert W2_VAULT "$VAULT"; upsert W2_EXECUTOR "$EXEC"; upsert W2_BUYER "$BUYER"
+upsert W2_ASSETVAULT "$ASSET"; upsert W2_GASVAULT "$GASV"; upsert W2_EXECUTOR "$EXEC"; upsert W2_BUYER "$BUYER"
 upsert W2_EXPECTED_NONCE "$((N+3))"
 echo "  A remainder: Lasna $(bal $A $RPC_LASNA) lREACT / Sepolia $(bal $A $RPC_SEP) ETH"

@@ -2,15 +2,17 @@
 pragma solidity ^0.8.29;
 
 import {Test} from "forge-std/Test.sol";
-import {VaultCore} from "../src/VaultCore.sol";
+import {AssetVault} from "../src/AssetVault.sol";
+import {GasVault} from "../src/GasVault.sol";
 import {Executor} from "../src/Executor.sol";
 import {IPayable} from "reactive-lib-omni/interfaces/IPayable.sol";
 
-/// @dev Executor v2 (ADR-v2): the vault+executor pair. refuelEthTank is
-///      a transfer from the client's reserve (need into the tank, margin
-///      into the treasury), no swap involved.
+/// @dev Executor v2 (ADR-v2 + ADR-EXPANSION §2): the assetVault+gasVault
+///      pair. refuelEthTank draws from the battery (need into the tank,
+///      margin into the treasury), no swap involved.
 contract ExecutorTest is Test {
-    VaultCore vault;
+    AssetVault vault;
+    GasVault battery;
     Executor executor;
 
     address alice = makeAddr("alice");
@@ -22,17 +24,18 @@ contract ExecutorTest is Test {
     event ExecutorLowEth(uint256 balance, uint256 threshold);
 
     function setUp() public {
-        vm.prank(alice);
-        vault = new VaultCore();
-        vm.prank(alice);
-        vault.setParams(10_000, 0, 1 ether); // whole deposit into the reserve (for this test)
-        vm.prank(alice);
-        executor = new Executor(rulesEngine, IPayable(payable(proxy)), vault, gasPayer);
-        vm.prank(alice);
+        vm.startPrank(alice);
+        vault = new AssetVault();
+        battery = new GasVault();
+        executor = new Executor(rulesEngine, IPayable(payable(proxy)), vault, battery, gasPayer);
+        vault.setGasVault(battery);
         vault.authorizeExecutor(address(executor));
+        battery.authorizeExecutor(address(executor));
+        vm.stopPrank();
+
         vm.deal(alice, 10 ether);
         vm.prank(alice);
-        vault.deposit{value: 1 ether}();
+        battery.depositFuel{value: 1 ether}();
     }
 
     function _refuel(uint256 need, uint256 margin) internal {
@@ -40,17 +43,16 @@ contract ExecutorTest is Test {
         executor.refuelEthTank(gasPayer, need, margin);
     }
 
-    /// Full path: need into the executor's tank, margin into the vault treasury.
+    /// Full path: need into the executor's tank, margin into the battery treasury.
     function testRefuelTankMovesFunds() public {
         vm.expectEmit(true, true, true, true);
         emit EthTankRefueled(0.4 ether, 0.04 ether);
         _refuel(0.4 ether, 0.04 ether);
 
         assertEq(address(executor).balance, 0.4 ether, "executor tank");
-        assertEq(vault.treasury(), 0.04 ether, "treasury pocket");
-        assertEq(vault.gasReserve(), 1 ether - 0.44 ether, "reserve minus need+margin");
-        assertEq(vault.totalDeposited(), 1 ether - 0.4 ether, "tracked = deposit - tanked");
-        assertEq(address(vault).balance, vault.totalDeposited(), "tracked == balance");
+        assertEq(battery.treasury(), 0.04 ether, "treasury pocket");
+        assertEq(battery.gasReserve(), 1 ether - 0.44 ether, "reserve minus need+margin");
+        assertEq(battery.gasReserve() + battery.treasury(), address(battery).balance, "pockets == balance");
         assertEq(executor.totalTankedEth(), 0.4 ether);
     }
 
@@ -77,15 +79,15 @@ contract ExecutorTest is Test {
     /// Reserve exhausted — the second refill reverts atomically (P1).
     function testRefuelBeyondReserveRevertsAtomically() public {
         _refuel(0.9 ether, 0.09 ether);
-        assertEq(vault.gasReserve(), 0.01 ether);
+        assertEq(battery.gasReserve(), 0.01 ether);
 
         vm.prank(proxy);
-        vm.expectRevert(VaultCore.InsufficientReserve.selector);
+        vm.expectRevert(GasVault.InsufficientReserve.selector);
         executor.refuelEthTank(gasPayer, 0.5 ether, 0.05 ether);
 
         // nothing changed
         assertEq(address(executor).balance, 0.9 ether);
-        assertEq(vault.treasury(), 0.09 ether);
+        assertEq(battery.treasury(), 0.09 ether);
     }
 
     /// After a refill the tank is still below the threshold → the

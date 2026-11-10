@@ -1,24 +1,28 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.29;
 
-import {IVaultCore} from "./VaultCore.sol";
+import {IAssetVault} from "./AssetVault.sol";
+import {IGasVault} from "./GasVault.sol";
 import {AbstractCallback} from "reactive-lib-omni/base/AbstractCallback.sol";
 import {IPayable} from "reactive-lib-omni/interfaces/IPayable.sol";
 
-/// @title Executor v2 — carries out instructions from the brain and the cashier (ADR-v2)
+/// @title Executor v2 — carries out instructions from the brain and the
+///        cashier (ADR-v2 + ADR-EXPANSION §2)
 /// @notice Two valid callback senders: RulesEngine (rebalance) and the
-///         GasPayer cashier (refuelEthTank). The USDC→ETH swap was dropped
-///         (the vault reserve is native ETH already): tank refills are
-///         plain transfers.
+///         GasPayer cashier (refuelEthTank). Capital work goes through
+///         the AssetVault, fuel through the GasVault — one battery for
+///         every asset and chain. Per-chain instances on expansion
+///         (same code, new deploy; ADR-EXPANSION §3).
 contract Executor is AbstractCallback {
-    IVaultCore public immutable vault;
+    IAssetVault public immutable assetVault;
+    IGasVault public immutable gasVault;
 
     address public poolA;
     address public poolB;
 
     /// @notice ETH tank: below the threshold → ExecutorLowEth event; the
     ///         cashier (Lasna) is subscribed and refills the tank by
-    ///         transferring from the client's gas reserve.
+    ///         drawing from the client's fuel reserve (GasVault).
     uint256 public ethLowThreshold = 0.005 ether;
 
     uint256 public rebalanceCount;
@@ -62,11 +66,16 @@ contract Executor is AbstractCallback {
         _;
     }
 
-    constructor(address rulesEngine_, IPayable callbackProxy_, IVaultCore vault_, address gasPayerSender_)
-        AbstractCallback(callbackProxy_, rulesEngine_)
-    {
+    constructor(
+        address rulesEngine_,
+        IPayable callbackProxy_,
+        IAssetVault assetVault_,
+        IGasVault gasVault_,
+        address gasPayerSender_
+    ) AbstractCallback(callbackProxy_, rulesEngine_) {
         owner = msg.sender;
-        vault = vault_;
+        assetVault = assetVault_;
+        gasVault = gasVault_;
         _GAS_PAYER_SENDER = gasPayerSender_;
         _original = address(this);
     }
@@ -87,14 +96,13 @@ contract Executor is AbstractCallback {
         onlyServiceProvider
         onlyCallbackSender(sender_)
     {
-        uint256 amount = vault.rebalanceTarget();
+        uint256 amount = assetVault.rebalanceTarget();
         rebalanceCount += 1;
         emit Rebalanced(sender_, originBlockNumber_, amount);
     }
 
-    /// @notice Refill the ETH tank by transferring from the client's
-    ///         reserve (cashier callback, Lasna). needWei goes into the
-    ///         tank, marginWei into the vault treasury pocket (the ETH
+    /// @notice Refill the ETH tank from the battery: needWei goes into
+    ///         the tank, marginWei into the treasury pocket (the ETH
     ///         fund). The reserve is ETH already: no swap needed (ADR-v2).
     function refuelEthTank(address sender_, uint256 needWei_, uint256 marginWei_)
         external
@@ -104,10 +112,10 @@ contract Executor is AbstractCallback {
     {
         if (marginWei_ > needWei_) revert BadMargin();
         if (marginWei_ > 0) {
-            vault.consumeGasReserve(marginWei_);
+            gasVault.consumeGasReserve(marginWei_);
         }
         if (needWei_ > 0) {
-            vault.releaseReserveTo(address(this), needWei_);
+            gasVault.releaseReserveTo(address(this), needWei_);
             totalTankedEth += needWei_;
         }
         emit EthTankRefueled(needWei_, marginWei_);
