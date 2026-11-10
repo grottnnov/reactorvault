@@ -113,6 +113,11 @@ contract Executor is AbstractCallback {
         uint256 amount = assetVault.rebalanceTarget();
         rebalanceCount += 1;
         emit Rebalanced(sender_, originBlockNumber_, amount);
+        // Bootstrap-cry: an empty tank must be able to cry from the
+        // rebalance callback itself — refuelEthTank is unreachable while
+        // the tank is empty, so without this check the cashier would
+        // never learn about the first refill (red №1, 10.11).
+        _checkEth();
     }
 
     /// @notice Refill the ETH tank from the battery: needWei goes into

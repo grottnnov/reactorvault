@@ -101,6 +101,19 @@ contract ExecutorTest is Test {
         _refuel(0.4 ether, 0.04 ether);
     }
 
+    /// Bootstrap-cry (red №1, 10.11): with an EMPTY tank the rebalance
+    /// callback itself must cry ExecutorLowEth — refuelEthTank is the
+    /// only cry site today, so with an empty tank the cashier can never
+    /// learn the executor needs its first refill.
+    function testRebalanceCriesWhenTankEmpty() public {
+        assertEq(address(executor).balance, 0);
+
+        vm.expectEmit(false, false, false, true);
+        emit ExecutorLowEth(0, 0.005 ether);
+        vm.prank(proxy);
+        executor.rebalance(rulesEngine, 1);
+    }
+
     /// rebalance — from the brain (the first sender): the counter grows,
     /// no funds touched (W2).
     function testRebalanceFromRulesEngine() public {
