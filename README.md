@@ -123,16 +123,37 @@ Scripts are self-documenting; read the header before running.
   `reserves − debts` on-chain.
 - **Idempotency everywhere**: duplicate event deliveries (cross-chain
   norm) are cut by `(chainId, blockNumber, topic0)` sets.
-- **Uniswap patterns** applied where they fit: invariants checked at
-  the end of operations, singleton mechanics vs product plugins,
+- **Uniswap patterns** applied where they fit: invariants checked at the
+  end of operations, singleton mechanics vs product plugins,
   `NoDelegateCall` on privileged paths, events before external calls.
+- **Capital transits through the safe**: pool adapters are plugins
+  (`IPoolAdapter`); the executor compares normalized WAD/yr rates
+  locally at execution time and only orchestrates `deployToPool` /
+  `recallFromPool` — it never holds capital. Settlement is strict: a
+  recalled adapter must return exactly the recalled ETH inside the call.
+- **Demo yield lever (disclosed)**: the second pool is an own
+  WETH/WETH Morpho market with a fixed 1:1 oracle (price is a
+  mathematical identity — nothing to manipulate) whose supply rate is
+  driven by the operator borrowing against their own collateral. The
+  yield is real mechanics funded by the operator — a demo-scale
+  instrument, not organic market yield; production targets organic
+  markets (Aave/Compound/public Morpho vaults). No mainnet same-asset
+  market precedent is claimed. Note: Morpho governance may set a market
+  fee up to 25% (paid to the protocol, not us) — a documented property
+  of the singleton we accept on the testnet.
 
 ## Status & roadmap
 
 - [x] W2: full family live on Lasna testnet + Sepolia, end-to-end
-  deposit→reaction cycle, auto-faucet primed
-- [ ] W3: lending-pool integration (Aave WETH + a dedicated Morpho
-  market), rate-driven rebalancing rules
+  deposit→reaction cycle, auto-faucet primed (first live cron feed
+  11.11: the reborn watchdog fed the depot, converter ordered fuel)
+- [x] W2 revision (code, fork-tested against live Sepolia): lending
+  pools — AavePoolAdapter + MorphoPoolAdapter on an own market, vault
+  pool accounting (`balance + inPools + treasury == tracked`),
+  rate-driven rebalance with a spread gate, bootstrap-cry fix
+- [ ] W2 live redeploy: the executor/vaults/adapters family + cashier
+  rewire, then the full loop measurement (cron tick → react →
+  rebalance → pools)
 - [ ] Mainnet: Uniswap + Reactive Bridge adapter for the fuel loop,
   multi-token entry
 
