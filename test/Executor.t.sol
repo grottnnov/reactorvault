@@ -5,6 +5,7 @@ import {Test} from "forge-std/Test.sol";
 import {AssetVault, IAssetVault} from "../src/AssetVault.sol";
 import {GasVault} from "../src/GasVault.sol";
 import {Executor} from "../src/Executor.sol";
+import {MockPool} from "./mocks/MockPool.sol";
 import {IPayable} from "reactive-lib-omni/interfaces/IPayable.sol";
 
 /// @dev Executor v2 (ADR-v2 + ADR-EXPANSION §2): the assetVault+gasVault
@@ -114,8 +115,8 @@ contract ExecutorTest is Test {
         executor.rebalance(rulesEngine, 1);
     }
 
-    /// rebalance — from the brain (the first sender): the counter grows,
-    /// no funds touched (W2).
+    /// rebalance — from the brain (the first sender): without pools set
+    /// only the counter grows; the cashier may not rebalance.
     function testRebalanceFromRulesEngine() public {
         vm.prank(proxy);
         executor.rebalance(rulesEngine, 42);
@@ -124,6 +125,78 @@ contract ExecutorTest is Test {
         vm.prank(proxy);
         vm.expectRevert(); // the cashier may not rebalance
         executor.rebalance(gasPayer, 43);
+    }
+
+    // ---------------------------------------------------------------
+    // Pool placement (W2): local rate decision, transit through the
+    // safe, spread gate between pools.
+    // ---------------------------------------------------------------
+
+    event Rebalanced(address indexed sender, uint256 originBlockNumber, uint256 amount);
+
+    function _armedPools() internal returns (MockPool a, MockPool b) {
+        a = new MockPool(); // 5%/yr
+        b = new MockPool(); // 5%/yr
+        vm.startPrank(alice);
+        vault.authorizePoolAdapter(address(a));
+        vault.authorizePoolAdapter(address(b));
+        executor.setPools(address(a), address(b));
+        vm.stopPrank();
+    }
+
+    function _rebalance() internal {
+        vm.prank(proxy);
+        executor.rebalance(rulesEngine, 1);
+    }
+
+    /// Idle capital goes to the better pool unconditionally.
+    function testRebalancePlacesFreeCapitalInBetterPool() public {
+        (MockPool a, MockPool b) = _armedPools();
+        b.setRatePerYear(0.09e18);
+        vm.deal(address(executor), 0.1 ether); // tank full — no cry noise
+        vm.deal(alice, 1 ether);
+        vm.prank(alice);
+        vault.deposit{value: 1 ether}();
+
+        vm.expectEmit(true, true, true, true);
+        emit Rebalanced(rulesEngine, 1, 1 ether);
+        _rebalance();
+
+        assertEq(vault.inPoolOf(address(b)), 1 ether, "all-in the better pool");
+        assertEq(vault.inPoolOf(address(a)), 0);
+        assertEq(address(vault).balance, 0, "no free left");
+        assertEq(address(vault).balance + vault.totalInPools(), vault.totalDeposited(), "safe invariant");
+    }
+
+    /// A spread above the gate moves capital between pools (through the
+    /// safe); below it the placement stays.
+    function testRebalanceMovesBetweenPoolsOnlyAboveSpread() public {
+        (MockPool a, MockPool b) = _armedPools();
+        vm.deal(alice, 1 ether);
+        vm.prank(alice);
+        vault.deposit{value: 1 ether}();
+
+        b.setRatePerYear(0.06e18); // +1% = exactly the gate
+        _rebalance();
+        assertEq(vault.inPoolOf(address(b)), 1 ether, "moved at the gate");
+        assertEq(a.totalSupplied(), 0);
+
+        b.setRatePerYear(0.055e18); // +0.5% — below the gate
+        _rebalance();
+        assertEq(vault.inPoolOf(address(b)), 1 ether, "stays below the gate");
+        assertEq(executor.rebalanceCount(), 2);
+    }
+
+    /// Equal rates: the tie goes to poolA; nothing flaps.
+    function testRebalanceTieStaysInPoolA() public {
+        (MockPool a, MockPool b) = _armedPools();
+        vm.deal(alice, 1 ether);
+        vm.prank(alice);
+        vault.deposit{value: 1 ether}();
+
+        _rebalance();
+        assertEq(vault.inPoolOf(address(a)), 1 ether);
+        assertEq(vault.inPoolOf(address(b)), 0);
     }
 
     /// P10: delegatecall is denied.

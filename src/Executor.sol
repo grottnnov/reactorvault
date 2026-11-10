@@ -3,6 +3,7 @@ pragma solidity ^0.8.29;
 
 import {IAssetVault} from "./AssetVault.sol";
 import {IGasVault} from "./GasVault.sol";
+import {IPoolAdapter} from "./IPoolAdapter.sol";
 import {AbstractCallback} from "reactive-lib-omni/base/AbstractCallback.sol";
 import {IPayable} from "reactive-lib-omni/interfaces/IPayable.sol";
 
@@ -28,6 +29,10 @@ contract Executor is AbstractCallback {
     ///         cashier (Lasna) is subscribed and refills the tank by
     ///         drawing from the client's fuel reserve (GasVault).
     uint256 public ethLowThreshold = 0.005 ether;
+
+    /// @notice Minimum APY gap (WAD/yr) to move capital between pools;
+    ///         below it the placement stays (gate against rate flapping).
+    uint256 public minSpreadWad = 0.01e18;
 
     uint256 public rebalanceCount;
     uint256 public totalTankedEth;
@@ -105,19 +110,50 @@ contract Executor is AbstractCallback {
         ethLowThreshold = threshold_;
     }
 
+    function setMinSpread(uint256 minSpreadWad_) external onlyOwner noDelegateCall {
+        minSpreadWad = minSpreadWad_;
+    }
+
+    /// @notice Rebalance: local decision at execution time. Rates are
+    ///         compared via adapter views on THIS chain (fresher than
+    ///         any event-carried data); idle free capital is placed
+    ///         unconditionally, a move between pools only above
+    ///         minSpreadWad. Capital transits THROUGH the safe
+    ///         (recall → deploy); the executor never holds it.
     function rebalance(address sender_, uint256 originBlockNumber_)
         external
         onlyServiceProvider
         onlyCallbackSender(sender_)
     {
-        uint256 amount = assetVault.rebalanceTarget();
+        uint256 moved;
+        if (poolA != address(0) && poolB != address(0)) {
+            moved = _placeCapital();
+        }
         rebalanceCount += 1;
-        emit Rebalanced(sender_, originBlockNumber_, amount);
+        emit Rebalanced(sender_, originBlockNumber_, moved);
         // Bootstrap-cry: an empty tank must be able to cry from the
         // rebalance callback itself — refuelEthTank is unreachable while
         // the tank is empty, so without this check the cashier would
         // never learn about the first refill (red №1, 10.11).
         _checkEth();
+    }
+
+    function _placeCapital() private returns (uint256 moved) {
+        uint256 rateA = IPoolAdapter(poolA).supplyRatePerYear();
+        uint256 rateB = IPoolAdapter(poolB).supplyRatePerYear();
+        (address best, address worst) = rateA >= rateB ? (poolA, poolB) : (poolB, poolA);
+        uint256 spread = rateA >= rateB ? rateA - rateB : rateB - rateA;
+
+        uint256 inWorst = assetVault.inPoolOf(worst);
+        if (inWorst > 0 && spread >= minSpreadWad) {
+            assetVault.recallFromPool(worst, inWorst);
+            moved = inWorst;
+        }
+        uint256 free = assetVault.rebalanceTarget();
+        if (free > 0) {
+            assetVault.deployToPool(best, free);
+            moved += free;
+        }
     }
 
     /// @notice Refill the ETH tank from the battery: needWei goes into
