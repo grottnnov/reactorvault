@@ -80,10 +80,17 @@ contract GasPayer is AbstractReactive {
     }
 
     /// @notice Смена исполнителя (адресат колбека долива) — без передеплоя.
+    ///         Подписка на крик ExecutorLowEth переезжает вместе с ним:
+    ///         отписка старого + подписка нового одним вызовом (CEI: поле
+    ///         и событие до внешних вызовов SYSTEM), иначе после
+    ///         передеплоя исполнителя кассир слушал бы мёртвый адрес.
     function setExecutor(address executor_) external onlyOwner {
         if (executor_ == address(0)) revert ZeroAddress();
         emit PartnerRewired("executor", executor, executor_);
+        address old = executor;
         executor = executor_;
+        SYSTEM.unsubscribe(DEST_CHAIN_ID, old, ethLowTopic, REACTIVE_IGNORE, REACTIVE_IGNORE, REACTIVE_IGNORE);
+        SYSTEM.subscribe(DEST_CHAIN_ID, executor_, ethLowTopic, REACTIVE_IGNORE, REACTIVE_IGNORE, REACTIVE_IGNORE);
     }
 
     /// @notice Смена эмиттера резерва (батареи): подписка переезжает —

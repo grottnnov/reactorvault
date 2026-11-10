@@ -231,6 +231,31 @@ contract GasPayerTest is Test {
         assertEq(gp.vault(), newEmitter);
         assertEq(sys.subscriptionCount(), before, "rewire: -old +new emitter");
     }
+
+    /// The ExecutorLowEth subscription must MOVE with the executor:
+    /// after setExecutor the cry is heard on the NEW executor and no
+    /// longer on the old one (a redeployed executor without this would
+    /// cry into a dead subscription — W2 red).
+    function testSetExecutorMovesCrySubscription() public {
+        address newExecutor = makeAddr("newExecutor");
+        gp.setExecutor(newExecutor);
+
+        assertEq(sys.subscriptionCount(), 2, "rewire: -old +new cry");
+
+        bool cryOnOld;
+        bool cryOnNew;
+        bool reserveOnVault;
+        for (uint256 i = 0; i < sys.subscriptionCount(); i++) {
+            (uint256 sChain, address sContract, uint256 sTopic,,,,) = sys.subscriptions(i);
+            if (sChain == 11155111 && sTopic == T_ETHLOW && sContract == executor) cryOnOld = true;
+            if (sChain == 11155111 && sTopic == T_ETHLOW && sContract == newExecutor) cryOnNew = true;
+            if (sChain == 11155111 && sTopic == T_RESERVE && sContract == vault) reserveOnVault = true;
+        }
+
+        assertFalse(cryOnOld, "old executor must be unsubscribed");
+        assertTrue(cryOnNew, "new executor must be subscribed");
+        assertTrue(reserveOnVault, "reserve subscription untouched");
+    }
 }
 
 /// @dev Cashier v2: owner parameters.
