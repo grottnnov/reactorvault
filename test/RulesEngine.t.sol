@@ -10,6 +10,10 @@ contract RulesEngineTest is Test {
     address internal constant OMNI_SYSTEM = 0x8888888888888888888888888888888888888888;
     uint256 internal constant REACTIVE_IGNORE = 0xa65f96fc951c35ead38878e0f0b7a3c744a6f5ccc1476b313353ce31712313ad;
 
+    uint256 constant SOURCE_CHAIN = 11155111;
+    uint256 constant OTHER_CHAIN = 4663; // Robinhood Chain (ADR-EXPANSION)
+    uint256 constant DEST_CHAIN = 11155111;
+
     uint256 constant RATE_CHANGE_TOPIC = uint256(
         keccak256(
             "ReserveDataUpdated(uint256 indexed reserve,uint256 liquidityRate,uint256 stableBorrowRate,uint256 variableBorrowRate,uint256 liquidityIndex,uint256 variableBorrowIndex)"
@@ -29,13 +33,17 @@ contract RulesEngineTest is Test {
         sys = OmniMockSystem(payable(OMNI_SYSTEM));
 
         engine = new RulesEngine();
-        engine.initialize(origin, RATE_CHANGE_TOPIC, executor, COOLDOWN);
+        engine.initialize(origin, SOURCE_CHAIN, RATE_CHANGE_TOPIC, executor, DEST_CHAIN, COOLDOWN);
         vm.warp(COOLDOWN);
     }
 
-    function _log(uint256 topic0_, uint256 blockNumber_) internal view returns (IReactive.LogRecord memory) {
+    function _log(uint256 chainId_, uint256 topic0_, uint256 blockNumber_)
+        internal
+        view
+        returns (IReactive.LogRecord memory)
+    {
         return IReactive.LogRecord({
-            chainId: 11155111,
+            chainId: chainId_,
             contractAddress: origin,
             topic0: topic0_,
             topic1: 0,
@@ -50,9 +58,9 @@ contract RulesEngineTest is Test {
         });
     }
 
-    function _react(uint256 topic0_, uint256 blockNumber_) internal {
+    function _react(uint256 chainId_, uint256 topic0_, uint256 blockNumber_) internal {
         vm.prank(OMNI_SYSTEM);
-        engine.react(_log(topic0_, blockNumber_));
+        engine.react(_log(chainId_, topic0_, blockNumber_));
     }
 
     function testInitializeSubscribesOnce() public view {
@@ -66,7 +74,7 @@ contract RulesEngineTest is Test {
             uint256 sTopic3,
             address sSubscriber
         ) = sys.subscriptions(0);
-        assertEq(sChainId, 11155111);
+        assertEq(sChainId, SOURCE_CHAIN);
         assertEq(sContract, origin);
         assertEq(sTopic0, RATE_CHANGE_TOPIC);
         assertEq(sTopic1, REACTIVE_IGNORE);
@@ -77,28 +85,28 @@ contract RulesEngineTest is Test {
 
     function testInitializeOnlyOnce() public {
         vm.expectRevert(RulesEngine.AlreadyInitialized.selector);
-        engine.initialize(origin, RATE_CHANGE_TOPIC, executor, COOLDOWN);
+        engine.initialize(origin, SOURCE_CHAIN, RATE_CHANGE_TOPIC, executor, DEST_CHAIN, COOLDOWN);
     }
 
     function testReactOnlyFromSystem() public {
         vm.prank(stranger);
         vm.expectRevert();
-        engine.react(_log(RATE_CHANGE_TOPIC, 100));
+        engine.react(_log(SOURCE_CHAIN, RATE_CHANGE_TOPIC, 100));
         assertEq(engine.firedCount(), 0);
         assertEq(sys.callbackCount(), 0);
     }
 
     function testReactFiresCallback() public {
         vm.expectEmit(true, false, false, true);
-        emit RuleFired(RATE_CHANGE_TOPIC, 100);
-        _react(RATE_CHANGE_TOPIC, 100);
+        emit RuleFired(RATE_CHANGE_TOPIC, SOURCE_CHAIN, 100);
+        _react(SOURCE_CHAIN, RATE_CHANGE_TOPIC, 100);
 
         assertEq(engine.firedCount(), 1);
         assertEq(sys.callbackCount(), 1);
 
         (uint256 cChainId, address cRecipient, uint64 cGasLimit, bytes memory cPayload, address cRequester) =
             sys.callbackRequests(0);
-        assertEq(cChainId, 11155111);
+        assertEq(cChainId, DEST_CHAIN);
         assertEq(cRecipient, executor);
         assertEq(cGasLimit, 900_000);
         assertEq(cRequester, address(engine));
@@ -106,29 +114,61 @@ contract RulesEngineTest is Test {
     }
 
     function testReactInactiveRuleSkipped() public {
-        engine.setRule(RATE_CHANGE_TOPIC, false, COOLDOWN);
-        _react(RATE_CHANGE_TOPIC, 100);
+        engine.setRule(SOURCE_CHAIN, RATE_CHANGE_TOPIC, false, COOLDOWN);
+        _react(SOURCE_CHAIN, RATE_CHANGE_TOPIC, 100);
         assertEq(engine.firedCount(), 0);
         assertEq(sys.callbackCount(), 0);
     }
 
     function testReactUnknownTopicSkipped() public {
-        _react(uint256(keccak256("UnknownEvent()")), 100);
+        _react(SOURCE_CHAIN, uint256(keccak256("UnknownEvent()")), 100);
         assertEq(engine.firedCount(), 0);
         assertEq(sys.callbackCount(), 0);
     }
 
+    /// ADR-EXPANSION §1: the same topic0 arriving from a chain the rule
+    /// is not keyed to must not fire — Robinhood/Base feeds share
+    /// signatures with Sepolia ones.
+    function testReactForeignChainIgnored() public {
+        _react(OTHER_CHAIN, RATE_CHANGE_TOPIC, 100);
+        assertEq(engine.firedCount(), 0);
+        assertEq(sys.callbackCount(), 0);
+    }
+
+    /// ADR-EXPANSION §1: one topic0 on two chains = two independent
+    /// rules with independent cooldowns; the callback still goes to the
+    /// configured destination chain.
+    function testReactSameTopicTwoChainsIndependent() public {
+        // other chain gets a shorter cooldown (1h vs 6h)
+        engine.setRule(OTHER_CHAIN, RATE_CHANGE_TOPIC, true, 1 hours);
+
+        // fire both at t = 6h (setUp warp)
+        _react(SOURCE_CHAIN, RATE_CHANGE_TOPIC, 100);
+        _react(OTHER_CHAIN, RATE_CHANGE_TOPIC, 100);
+        assertEq(engine.firedCount(), 2);
+        assertEq(sys.callbackCount(), 2);
+
+        // +2h: other-chain cooldown (1h) has passed — fires again;
+        // source-chain cooldown (6h) still active — stays silent
+        vm.warp(block.timestamp + 2 hours);
+        _react(OTHER_CHAIN, RATE_CHANGE_TOPIC, 200);
+        assertEq(engine.firedCount(), 3);
+
+        _react(SOURCE_CHAIN, RATE_CHANGE_TOPIC, 200);
+        assertEq(engine.firedCount(), 3);
+    }
+
     function testReactCooldownBlocksSecondFire() public {
-        _react(RATE_CHANGE_TOPIC, 100);
+        _react(SOURCE_CHAIN, RATE_CHANGE_TOPIC, 100);
         assertEq(engine.firedCount(), 1);
 
         vm.warp(block.timestamp + COOLDOWN / 2);
-        _react(RATE_CHANGE_TOPIC, 200);
+        _react(SOURCE_CHAIN, RATE_CHANGE_TOPIC, 200);
         assertEq(engine.firedCount(), 1);
         assertEq(sys.callbackCount(), 1);
 
         vm.warp(block.timestamp + COOLDOWN);
-        _react(RATE_CHANGE_TOPIC, 300);
+        _react(SOURCE_CHAIN, RATE_CHANGE_TOPIC, 300);
         assertEq(engine.firedCount(), 2);
         assertEq(sys.callbackCount(), 2);
     }
@@ -136,24 +176,34 @@ contract RulesEngineTest is Test {
     /// Idempotency (UF §14): a duplicate event (chain, block, topic) —
     /// one firing, even after the cooldown.
     function testReactDuplicateEventSingleFire() public {
-        _react(RATE_CHANGE_TOPIC, 100);
+        _react(SOURCE_CHAIN, RATE_CHANGE_TOPIC, 100);
         assertEq(engine.firedCount(), 1);
 
         // an immediate duplicate of the same block — no second callback
-        _react(RATE_CHANGE_TOPIC, 100);
+        _react(SOURCE_CHAIN, RATE_CHANGE_TOPIC, 100);
         assertEq(engine.firedCount(), 1);
         assertEq(sys.callbackCount(), 1);
 
         // a duplicate after the cooldown — still one: the key is the same
         vm.warp(block.timestamp + COOLDOWN * 2);
-        _react(RATE_CHANGE_TOPIC, 100);
+        _react(SOURCE_CHAIN, RATE_CHANGE_TOPIC, 100);
         assertEq(engine.firedCount(), 1);
         assertEq(sys.callbackCount(), 1);
 
         // a new block — a new firing
-        _react(RATE_CHANGE_TOPIC, 101);
+        _react(SOURCE_CHAIN, RATE_CHANGE_TOPIC, 101);
         assertEq(engine.firedCount(), 2);
     }
 
-    event RuleFired(uint256 indexed topic0, uint256 originBlockNumber);
+    /// ADR-EXPANSION §1: the destination chain is data — switching it
+    /// redirects every subsequent callback.
+    function testSetDestChainRedirectsCallback() public {
+        engine.setDestChain(OTHER_CHAIN);
+        _react(SOURCE_CHAIN, RATE_CHANGE_TOPIC, 100);
+        (uint256 cChainId, address cRecipient,,,) = sys.callbackRequests(0);
+        assertEq(cChainId, OTHER_CHAIN);
+        assertEq(cRecipient, executor);
+    }
+
+    event RuleFired(uint256 indexed topic0, uint256 originChainId, uint256 originBlockNumber);
 }

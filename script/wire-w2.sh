@@ -38,7 +38,7 @@ sendS() { cast send "$1" "${@:2}" --rpc-url "$RPC_SEP" --private-key "$PK" --jso
   | python3 -c "import json,sys; r=json.load(sys.stdin); print('  tx', r['transactionHash'][:18]+'…', r['status'])"; }
 
 echo "== [1] Lasna subscriptions"
-sendL "$W2_RULES" 'initialize(address,uint256,address,uint64)' "$W2_VAULT" "$T_DEPOSITED" "$W2_EXECUTOR" 3600
+sendL "$W2_RULES" 'initialize(address,uint256,uint256,address,uint256,uint64)' "$W2_VAULT" 11155111 "$T_DEPOSITED" "$W2_EXECUTOR" 11155111 3600
 sendL "$W2_GASPAYER" 'init()'
 sendL "$W2_CONVERTER" 'init()'
 sendL "$W2_DOG" 'init()'

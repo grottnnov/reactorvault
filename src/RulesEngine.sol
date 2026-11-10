@@ -4,20 +4,30 @@ pragma solidity ^0.8.29;
 import {AbstractReactive} from "reactive-lib-omni/base/AbstractReactive.sol";
 import {ISystemContract} from "reactive-lib-omni/interfaces/ISystemContract.sol";
 
-/// @title RulesEngine — the brain (ADR-v2)
+/// @title RulesEngine — the brain (ADR-v2 + ADR-EXPANSION)
 /// @notice Product logic ONLY: "if X → ACT" rules, callbacks into the
-///         Executor. Cash-handling lives in the cashier (GasPayer), not
-///         here (P3 canon: mechanics ≠ product). Free eyes on its own
-///         lREACT tank in every react() + a LowGas cry (threshold at half
-///         the depot patrol floor — a safety net). Idempotency: a
+///         Executor. A rule is keyed by (origin chainId, topic0) so the
+///         same event signature from two chains (Chainlink feeds on
+///         Sepolia vs Robinhood, Aave events on Sepolia vs Base Sepolia)
+///         stays two independent rules. The callback destination chain
+///         is configured data, not a code constant — a per-chain
+///         Executor instance is the expansion path (ADR-EXPANSION §3).
+///         Cash-handling lives in the cashier (GasPayer), not here (P3
+///         canon: mechanics ≠ product). Free eyes on its own lREACT
+///         tank in every react() + a LowGas cry. Idempotency: a
 ///         processed-set of (chainId, blockNumber, topic0). P10:
 ///         noDelegateCall on owner entry points.
 contract RulesEngine is AbstractReactive {
-    uint256 public constant DEST_CHAIN_ID = 11155111;
     uint64 public constant CALLBACK_GAS_LIMIT = 900_000;
 
     address public owner;
     address public executor;
+
+    /// @notice Subscription source chain (set at initialize) and the
+    ///         callback destination chain — data, not constants.
+    uint256 public sourceChainId;
+    uint256 public destChainId;
+
     bool public initialized;
 
     struct Rule {
@@ -26,7 +36,9 @@ contract RulesEngine is AbstractReactive {
         uint64 lastFiredAt;
     }
 
-    mapping(uint256 topic0 => Rule) public rules;
+    /// @dev Rule key = keccak256(origin chainId ‖ topic0). Two chains
+    ///      emitting the same topic0 → two keys, two cooldowns.
+    mapping(bytes32 => Rule) public rules;
     uint256 public firedCount;
 
     uint256 public gasLowThresholdWei;
@@ -40,9 +52,9 @@ contract RulesEngine is AbstractReactive {
     /// @dev P10: immutable against delegatecall.
     address private immutable _original;
 
-    event RuleSet(uint256 topic0, bool active, uint64 cooldown);
-    event RuleFired(uint256 indexed topic0, uint256 originBlockNumber);
-    event Subscribed(uint256 topic0, address origin);
+    event RuleSet(bytes32 indexed key, uint256 chainId, uint256 topic0, bool active, uint64 cooldown);
+    event RuleFired(uint256 indexed topic0, uint256 originChainId, uint256 originBlockNumber);
+    event Subscribed(uint256 chainId, address indexed origin, uint256 topic0);
     event LowGas(uint256 balance, uint256 target);
 
     error NotOwner();
@@ -66,29 +78,47 @@ contract RulesEngine is AbstractReactive {
         _original = address(this);
     }
 
-    function initialize(address origin_, uint256 rateChangeTopic_, address executor_, uint64 cooldown_)
-        external
-        onlyOwner
-        noDelegateCall
-    {
+    function ruleKey(uint256 chainId_, uint256 topic0_) public pure returns (bytes32) {
+        return keccak256(abi.encodePacked(chainId_, topic0_));
+    }
+
+    function initialize(
+        address origin_,
+        uint256 sourceChainId_,
+        uint256 rateChangeTopic_,
+        address executor_,
+        uint256 destChainId_,
+        uint64 cooldown_
+    ) external onlyOwner noDelegateCall {
         if (initialized) revert AlreadyInitialized();
         if (executor_ == address(0)) revert ZeroAddress();
         initialized = true;
         executor = executor_;
-        rules[rateChangeTopic_] = Rule({active: true, cooldown: cooldown_, lastFiredAt: 0});
-        SYSTEM.subscribe(DEST_CHAIN_ID, origin_, rateChangeTopic_, REACTIVE_IGNORE, REACTIVE_IGNORE, REACTIVE_IGNORE);
-        emit Subscribed(rateChangeTopic_, origin_);
+        sourceChainId = sourceChainId_;
+        destChainId = destChainId_;
+        rules[ruleKey(sourceChainId_, rateChangeTopic_)] = Rule({active: true, cooldown: cooldown_, lastFiredAt: 0});
+        SYSTEM.subscribe(sourceChainId_, origin_, rateChangeTopic_, REACTIVE_IGNORE, REACTIVE_IGNORE, REACTIVE_IGNORE);
+        emit Subscribed(sourceChainId_, origin_, rateChangeTopic_);
     }
 
-    function setRule(uint256 topic0_, bool active_, uint64 cooldown_) external onlyOwner noDelegateCall {
-        rules[topic0_].active = active_;
-        rules[topic0_].cooldown = cooldown_;
-        emit RuleSet(topic0_, active_, cooldown_);
+    function setRule(uint256 chainId_, uint256 topic0_, bool active_, uint64 cooldown_)
+        external
+        onlyOwner
+        noDelegateCall
+    {
+        rules[ruleKey(chainId_, topic0_)] = Rule({active: active_, cooldown: cooldown_, lastFiredAt: 0});
+        emit RuleSet(ruleKey(chainId_, topic0_), chainId_, topic0_, active_, cooldown_);
     }
 
     function setExecutor(address executor_) external onlyOwner noDelegateCall {
         if (executor_ == address(0)) revert ZeroAddress();
         executor = executor_;
+    }
+
+    /// @notice Destination chain of the callback — configured data
+    ///         (ADR-EXPANSION §1: per-chain Executor instances).
+    function setDestChain(uint256 destChainId_) external onlyOwner noDelegateCall {
+        destChainId = destChainId_;
     }
 
     /// @notice Cry threshold: half the depot patrol floor (a safety net
@@ -122,7 +152,7 @@ contract RulesEngine is AbstractReactive {
             return;
         }
         processed[key] = true;
-        Rule storage rule = rules[log_.topic0];
+        Rule storage rule = rules[ruleKey(log_.chainId, log_.topic0)];
         if (!rule.active) {
             return;
         }
@@ -131,11 +161,11 @@ contract RulesEngine is AbstractReactive {
         }
         rule.lastFiredAt = uint64(block.timestamp);
         firedCount += 1;
-        emit RuleFired(log_.topic0, log_.blockNumber);
+        emit RuleFired(log_.topic0, log_.chainId, log_.blockNumber);
         bytes memory payload = abi.encodeWithSignature("rebalance(address,uint256)", address(0), log_.blockNumber);
         SYSTEM.requestCallbackV_1_0(
             ISystemContract.CallbackConfiguration_V_1_0({
-                chainId: DEST_CHAIN_ID, recipient: executor, gasLimit: CALLBACK_GAS_LIMIT, payload: payload
+                chainId: destChainId, recipient: executor, gasLimit: CALLBACK_GAS_LIMIT, payload: payload
             })
         );
     }
