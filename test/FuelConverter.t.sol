@@ -197,4 +197,35 @@ contract FuelConverterTest is Test {
         assertEq(faucet.received(), 0.02 ether);
         assertEq(buyer.buysCount(), 1);
     }
+
+    /// ADR-EXPANSION: конвертер и покупщик — партнёры сменяемы;
+    /// смена склада у конвертера переставляет подписку HorizonAlert.
+    function testPartnersRewire() public {
+        uint256 before = sys.subscriptionCount();
+        address newFund = makeAddr("newFund");
+
+        vm.prank(makeAddr("nobody"));
+        vm.expectRevert(FuelConverter.NotOwner.selector);
+        converter.setFund(newFund);
+
+        vm.startPrank(converter.owner());
+        vm.expectRevert(FuelConverter.ZeroAddress.selector);
+        converter.setBuyer(address(0));
+        converter.setFund(newFund);
+        address newBuyerAddr = makeAddr("newBuyer");
+        converter.setBuyer(newBuyerAddr);
+        vm.stopPrank();
+
+        assertEq(converter.fund(), newFund);
+        assertEq(converter.buyer(), newBuyerAddr);
+        assertEq(sys.subscriptionCount(), before, "rewire: -old +new horizon emitter");
+
+        // покупщик: получатель топлива сменяем
+        vm.startPrank(buyer.owner());
+        vm.expectRevert(FuelBuyer.ZeroAddress.selector);
+        buyer.setFund(address(0));
+        buyer.setFund(newFund);
+        vm.stopPrank();
+        assertEq(buyer.fund(), newFund);
+    }
 }

@@ -2,7 +2,7 @@
 pragma solidity ^0.8.29;
 
 import {Test} from "forge-std/Test.sol";
-import {AssetVault} from "../src/AssetVault.sol";
+import {AssetVault, IAssetVault} from "../src/AssetVault.sol";
 import {GasVault} from "../src/GasVault.sol";
 import {Executor} from "../src/Executor.sol";
 import {IPayable} from "reactive-lib-omni/interfaces/IPayable.sol";
@@ -119,6 +119,26 @@ contract ExecutorTest is Test {
         vm.deal(address(c), 1 ether);
         vm.expectRevert(Executor.DelegateCallNotAllowed.selector);
         c.callRefuel(address(executor), proxy, gasPayer);
+    }
+
+    /// ADR-EXPANSION: пара сейф+батарея меняется атомарно одним сеттером.
+    function testSetVaultsAtomicPair() public {
+        AssetVault newVault = new AssetVault();
+        GasVault newBattery = new GasVault();
+
+        vm.prank(makeAddr("nobody"));
+        vm.expectRevert(Executor.NotOwner.selector);
+        executor.setVaults(newVault, newBattery);
+
+        vm.prank(alice);
+        vm.expectRevert(Executor.ZeroAddress.selector);
+        executor.setVaults(IAssetVault(address(0)), newBattery);
+
+        vm.startPrank(alice);
+        executor.setVaults(newVault, newBattery);
+        vm.stopPrank();
+        assertEq(address(executor.assetVault()), address(newVault));
+        assertEq(address(executor.gasVault()), address(newBattery));
     }
 }
 

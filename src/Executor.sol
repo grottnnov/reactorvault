@@ -14,8 +14,12 @@ import {IPayable} from "reactive-lib-omni/interfaces/IPayable.sol";
 ///         every asset and chain. Per-chain instances on expansion
 ///         (same code, new deploy; ADR-EXPANSION §3).
 contract Executor is AbstractCallback {
-    IAssetVault public immutable assetVault;
-    IGasVault public immutable gasVault;
+    /// @notice Партнёры сменяемы owner'ом ОДНИМ атомарным сеттером
+    ///         (ADR-EXPANSION: сейф и батарея переезжают только парой —
+    ///         рассинхрон адресатов исключён конструкцией). Гварды
+    ///         отправителей (мозг/кассир) — immutable намеренно.
+    IAssetVault public assetVault;
+    IGasVault public gasVault;
 
     address public poolA;
     address public poolB;
@@ -32,6 +36,7 @@ contract Executor is AbstractCallback {
     event PoolsSet(address poolA, address poolB);
     event EthTankRefueled(uint256 needWei, uint256 marginWei);
     event ExecutorLowEth(uint256 balance, uint256 threshold);
+    event VaultsRewired(address indexed assetVault, address indexed gasVault);
 
     error NotOwner();
     error ZeroAddress();
@@ -85,6 +90,15 @@ contract Executor is AbstractCallback {
         poolA = poolA_;
         poolB = poolB_;
         emit PoolsSet(poolA_, poolB_);
+    }
+
+    /// @notice Атомарная смена пары сейф+батарея — только вместе
+    ///         (zero-address запрещён; смена — событием).
+    function setVaults(IAssetVault assetVault_, IGasVault gasVault_) external onlyOwner noDelegateCall {
+        if (address(assetVault_) == address(0) || address(gasVault_) == address(0)) revert ZeroAddress();
+        assetVault = assetVault_;
+        gasVault = gasVault_;
+        emit VaultsRewired(address(assetVault_), address(gasVault_));
     }
 
     function setEthLowThreshold(uint256 threshold_) external onlyOwner noDelegateCall {

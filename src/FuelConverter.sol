@@ -24,7 +24,10 @@ interface IFuelSource {
 contract FuelBuyer is AbstractCallback {
     address public owner;
     IFuelSource public faucet;
-    address public immutable fund; // lREACT recipient (the depot, Lasna)
+
+    /// @notice Получатель топлива сменяем owner'ом (ADR-EXPANSION);
+    ///         гвард отправителя (конвертер) — immutable намеренно.
+    address public fund; // lREACT recipient (the depot, Lasna)
 
     uint256 public buyAmountWei = 0.02 ether;
     uint256 public buysCount;
@@ -32,6 +35,7 @@ contract FuelBuyer is AbstractCallback {
 
     event FuelBought(uint256 ethSpent, address indexed fund);
     event FaucetSet(address faucet);
+    event FundRewired(address indexed from, address to);
 
     error NotOwner();
     error ZeroAddress();
@@ -54,6 +58,13 @@ contract FuelBuyer is AbstractCallback {
         if (address(faucet_) == address(0)) revert ZeroAddress();
         faucet = faucet_;
         emit FaucetSet(address(faucet_));
+    }
+
+    /// @notice Смена получателя топлива (склада) — без передеплоя.
+    function setFund(address fund_) external onlyOwner {
+        if (fund_ == address(0)) revert ZeroAddress();
+        emit FundRewired(fund, fund_);
+        fund = fund_;
     }
 
     function setBuyAmount(uint256 wei_) external onlyOwner {
@@ -103,8 +114,12 @@ contract FuelConverter is AbstractReactive {
     uint256 public constant DEST_CHAIN_ID = 11155111;
     uint64 public constant ACTION_GAS_LIMIT = 300_000;
 
-    address public immutable fund; // the depot (Lasna): emitter of HorizonAlert
-    address public immutable buyer; // FuelBuyer (Sepolia)
+    /// @notice Партнёры сменяемы owner'ом (ADR-EXPANSION): смена склада
+    ///         переставляет подписку на его HorizonAlert в одном вызове.
+    address public fund; // the depot (Lasna): emitter of HorizonAlert
+    address public buyer; // FuelBuyer (Sepolia)
+
+    event PartnersRewired(address indexed fund, address indexed buyer);
 
     /// @notice topic0 of HorizonAlert(uint256,uint256,uint256,uint8)
     uint256 public immutable horizonTopic;
@@ -133,6 +148,25 @@ contract FuelConverter is AbstractReactive {
         fund = fund_;
         buyer = buyer_;
         horizonTopic = horizonTopic_;
+    }
+
+    /// @notice Смена склада: подписка на HorizonAlert переезжает
+    ///         (отписка старого эмиттера + подписка нового). CEI: поле
+    ///         и событие до внешних вызовов SYSTEM.
+    function setFund(address fund_) external onlyOwner {
+        if (fund_ == address(0)) revert ZeroAddress();
+        emit PartnersRewired(fund_, buyer);
+        address old = fund;
+        fund = fund_;
+        SYSTEM.unsubscribe(SRC_CHAIN_ID, old, horizonTopic, REACTIVE_IGNORE, REACTIVE_IGNORE, REACTIVE_IGNORE);
+        SYSTEM.subscribe(SRC_CHAIN_ID, fund_, horizonTopic, REACTIVE_IGNORE, REACTIVE_IGNORE, REACTIVE_IGNORE);
+    }
+
+    /// @notice Смена покупщика (адресат колбека покупки) — без передеплоя.
+    function setBuyer(address buyer_) external onlyOwner {
+        if (buyer_ == address(0)) revert ZeroAddress();
+        emit PartnersRewired(fund, buyer_);
+        buyer = buyer_;
     }
 
     function init() external onlyOwner {

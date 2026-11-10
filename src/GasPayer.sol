@@ -19,10 +19,16 @@ contract GasPayer is AbstractReactive {
     uint256 public constant DEST_CHAIN_ID = 11155111;
     uint64 public constant ACTION_GAS_LIMIT = 1_000_000;
 
-    address public immutable executor;
-    address public immutable vault;
+    /// @notice Партнёры сменяемы owner'ом (ADR-EXPANSION: гварды —
+    ///         намертво, партнёры — ремонтные люки). Миграция эмиттера
+    ///         резерва переставляет подписку: отписка старого + подписка
+    ///         нового в одном вызове.
+    address public executor;
+    address public vault; // emitter of GasReserveUpdated (the battery)
     uint256 public immutable ethLowTopic;
     uint256 public immutable reserveTopic;
+
+    event PartnerRewired(string indexed role, address indexed from, address to);
 
     /// @notice Tariff and cycle limits: the tank need (wei) plus a
     ///         marginNum/100 share routed into the vault treasury; a cap
@@ -71,6 +77,25 @@ contract GasPayer is AbstractReactive {
         vault = vault_;
         ethLowTopic = ethLowTopic_;
         reserveTopic = reserveTopic_;
+    }
+
+    /// @notice Смена исполнителя (адресат колбека долива) — без передеплоя.
+    function setExecutor(address executor_) external onlyOwner {
+        if (executor_ == address(0)) revert ZeroAddress();
+        emit PartnerRewired("executor", executor, executor_);
+        executor = executor_;
+    }
+
+    /// @notice Смена эмиттера резерва (батареи): подписка переезжает —
+    ///         отписка старого эмиттера и подписка нового одним вызовом.
+    ///         CEI: поле и событие до внешних вызовов SYSTEM.
+    function setReserveEmitter(address vault_) external onlyOwner {
+        if (vault_ == address(0)) revert ZeroAddress();
+        emit PartnerRewired("reserveEmitter", vault, vault_);
+        address old = vault;
+        vault = vault_;
+        SYSTEM.unsubscribe(DEST_CHAIN_ID, old, reserveTopic, REACTIVE_IGNORE, REACTIVE_IGNORE, REACTIVE_IGNORE);
+        SYSTEM.subscribe(DEST_CHAIN_ID, vault_, reserveTopic, REACTIVE_IGNORE, REACTIVE_IGNORE, REACTIVE_IGNORE);
     }
 
     function init() external onlyOwner {

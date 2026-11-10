@@ -209,6 +209,28 @@ contract GasPayerTest is Test {
         emit GasPayer.LowGas(0, 0.3 ether);
         _reserve(1 ether, 100);
     }
+
+    /// ADR-EXPANSION: partners are rewirable - executor (callback target),
+    /// reserve emitter moves together with its subscription.
+    function testSettersRewirePartners() public {
+        address newExecutor = makeAddr("newExecutor");
+        address newEmitter = makeAddr("newEmitter");
+        uint256 before = sys.subscriptionCount();
+
+        vm.prank(makeAddr("stranger"));
+        vm.expectRevert(GasPayer.NotOwner.selector);
+        gp.setExecutor(newExecutor);
+
+        vm.expectRevert(GasPayer.ZeroAddress.selector);
+        gp.setReserveEmitter(address(0));
+
+        gp.setExecutor(newExecutor);
+        gp.setReserveEmitter(newEmitter);
+
+        assertEq(gp.executor(), newExecutor);
+        assertEq(gp.vault(), newEmitter);
+        assertEq(sys.subscriptionCount(), before, "rewire: -old +new emitter");
+    }
 }
 
 /// @dev Cashier v2: owner parameters.
