@@ -4,10 +4,13 @@ pragma solidity ^0.8.29;
 import {Test} from "forge-std/Test.sol";
 import {AssetVault} from "../src/AssetVault.sol";
 import {GasVault} from "../src/GasVault.sol";
+import {MockPool} from "./mocks/MockPool.sol";
 
 /// @dev AssetVault (ADR-EXPANSION §2): pure working capital, per-asset
 ///      instance; the treasury share is routed to the battery at
-///      deposit. Invariant: balance + treasurySent ≡ totalDeposited.
+///      deposit. Invariant: balance + totalInPools + treasurySent
+///      ≡ totalDeposited — capital lives in the safe or in authorized
+///      pool adapters, rebalancing transits THROUGH the safe.
 contract AssetVaultTest is Test {
     AssetVault public vault;
     GasVault public battery;
@@ -110,6 +113,110 @@ contract AssetVaultTest is Test {
         assertEq(vault.totalDeposited(), 0);
         assertEq(vault.treasurySent(), 0);
         assertEq(address(vault).balance, 0);
+    }
+
+    // ---------------------------------------------------------------
+    // Pool accounting (W2): deploy/recall, strict settlement, the
+    // invariant balance + totalInPools + treasurySent ≡ totalDeposited.
+    // ---------------------------------------------------------------
+
+    function _invariant(string memory where) internal view {
+        assertEq(
+            address(vault).balance + vault.totalInPools() + vault.treasurySent(),
+            vault.totalDeposited(),
+            string.concat("invariant: ", where)
+        );
+    }
+
+    function _adapter() internal returns (MockPool pool) {
+        pool = new MockPool();
+        vm.prank(alice);
+        vault.authorizePoolAdapter(address(pool));
+    }
+
+    function _deploy(address pool, uint256 amount) internal {
+        vm.prank(executor);
+        vault.deployToPool(pool, amount);
+    }
+
+    function _recall(address pool, uint256 amount) internal {
+        vm.prank(executor);
+        vault.recallFromPool(pool, amount);
+    }
+
+    /// Deploy and recall: ETH moves safe↔adapter, the invariant holds
+    /// at every stop.
+    function testDeployAndRecallFlow() public {
+        MockPool pool = _adapter();
+        _deposit(1 ether);
+
+        _deploy(address(pool), 0.8 ether);
+        assertEq(address(vault).balance, 0.2 ether, "free after deploy");
+        assertEq(vault.inPoolOf(address(pool)), 0.8 ether);
+        assertEq(pool.totalSupplied(), 0.8 ether, "pool position");
+        assertEq(pool.supplyRatePerYear(), 0.05e18, "rate normalization WAD/yr");
+        _invariant("after deploy");
+
+        _recall(address(pool), 0.5 ether);
+        assertEq(address(vault).balance, 0.7 ether, "free after recall");
+        assertEq(vault.inPoolOf(address(pool)), 0.3 ether);
+        assertEq(pool.totalSupplied(), 0.3 ether);
+        _invariant("after recall");
+    }
+
+    /// Guards: executor-only entry, unknown adapters, above-free and
+    /// above-position amounts.
+    function testPoolGuards() public {
+        MockPool pool = _adapter();
+        _deposit(1 ether);
+
+        vm.prank(alice);
+        vm.expectRevert(AssetVault.NotExecutor.selector);
+        vault.deployToPool(address(pool), 0.1 ether);
+
+        vm.prank(executor);
+        vm.expectRevert(AssetVault.AdapterUnknown.selector);
+        vault.deployToPool(makeAddr("unknown"), 0.1 ether);
+
+        vm.prank(executor);
+        vm.expectRevert(AssetVault.InsufficientFree.selector);
+        vault.deployToPool(address(pool), 2 ether);
+
+        vm.prank(executor);
+        vm.expectRevert(AssetVault.InsufficientInPool.selector);
+        vault.recallFromPool(address(pool), 1 ether);
+
+        vm.prank(alice);
+        vm.expectRevert(AssetVault.AdapterAlreadyKnown.selector);
+        vault.authorizePoolAdapter(address(pool));
+    }
+
+    /// The client's exit always works: withdrawAll recalls every pool
+    /// before sweeping.
+    function testWithdrawAllRecallsFromPools() public {
+        MockPool pool = _adapter();
+        _deposit(1 ether);
+        _deploy(address(pool), 1 ether); // all-in
+        assertEq(address(vault).balance, 0);
+        uint256 ownerBefore = alice.balance;
+
+        vm.prank(alice);
+        vault.withdrawAll();
+
+        assertEq(alice.balance, ownerBefore + 1 ether, "owner got everything");
+        assertEq(pool.totalSupplied(), 0, "pool empty");
+        assertEq(vault.inPoolOf(address(pool)), 0);
+        assertEq(address(vault).balance, 0);
+        _invariant("after withdrawAll");
+    }
+
+    /// Donation policy unchanged outside the settlement window: a
+    /// direct transfer still reverts even with adapters around.
+    function testDonationsStillRevertedWithPools() public {
+        _adapter();
+        vm.expectRevert(AssetVault.DonationsNotAllowed.selector);
+        (bool ok,) = address(vault).call{value: 1 ether}("");
+        ok;
     }
 }
 
