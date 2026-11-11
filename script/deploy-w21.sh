@@ -56,7 +56,7 @@ mustBe "$(dep "$RPC_LASNA" RulesEngine)" "$RULES21" "brain"
 mustBe "$(dep "$RPC_LASNA" GasPayer "$EXEC21 $GASV21 $T_ETH_LOW $T_RESERVE")" "$GAS21" "cashier"
 
 echo "== [4] .env: сохранить старые как *_OLD, upsert новые"
-upsert() { if grep -q "^$1=" .env 2>/dev/null; then sed -i "s|^$1=.*|$1=$2|" .env; else printf '%s=%s\n' "$1=$2" >> .env; fi; }
+upsert() { if grep -q "^$1=" .env 2>/dev/null; then sed -i "s|^$1=.*|$1=$2|" .env; else printf '%s\n' "$1=$2" >> .env; fi; }
 save_old() { local v; v=$(grep -oP "^$1=\K.*" .env 2>/dev/null); [ -n "$v" ] && upsert "$1_OLD" "$v"; return 0; }
 save_old W2_RULES; save_old W2_GASPAYER; save_old W2_EXECUTOR
 upsert W2_RULES "$RULES21"; upsert W2_GASPAYER "$GAS21"; upsert W2_EXECUTOR "$EXEC21"

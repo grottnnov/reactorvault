@@ -106,7 +106,7 @@ echo "  brain owner:"; cast call "$RULES22" 'owner()(address)' --rpc-url "$RPC_L
 echo "  depot dogContract:"; cast call "$FUND22" 'dogContract()(address)' --rpc-url "$RPC_LASNA"
 
 echo "== [5] .env: старые → *_OLD, upsert новые"
-upsert() { if grep -q "^$1=" .env 2>/dev/null; then sed -i "s|^$1=.*|$1=$2|" .env; else printf '%s=%s\n' "$1=$2" >> .env; fi; }
+upsert() { if grep -q "^$1=" .env 2>/dev/null; then sed -i "s|^$1=.*|$1=$2|" .env; else printf '%s\n' "$1=$2" >> .env; fi; }
 save_old() { local v; v=$(grep -oP "^$1=\K.*" .env 2>/dev/null); [ -n "$v" ] && upsert "$1_OLD" "$v"; return 0; }
 for k in W2_RULES W2_GASPAYER W2_FUND W2_ASSETVAULT W2_EXECUTOR; do save_old "$k"; done
 upsert W2_RULES "$RULES22"; upsert W2_GASPAYER "$GAS22"; upsert W2_FUND "$FUND22"

@@ -4,7 +4,8 @@
 # Критические места:
 #   - миграция сторожа на новый склад: pause → setReliefFund → resume
 #     (перерыв между pause/resume секунды; попавший тик теряется — принято);
-#   - СТОРОЖ В РЕЕСТР КОРМЛЕНИЯ (пол 0.1 / порция 0.03) — фикс провиса
+#   - СТОРОЖ В РЕЕСТР КОРМЛЕНИЯ (пол 0.15 / порция 0.08, замер тика 11.11
+#     ~0.05 lREACT/тик со стеком эхо-событий) — фикс провиса
 #     W2.1 (ward (0,0) молча сторожил бак до смерти);
 #   - правило-будильник: подписка мозгом на крон-эмиттер 0x…fffFfF
 #     (старый мозг не умел — потому и передеплой), cooldown СУТОЧНЫЙ:
@@ -65,10 +66,10 @@ send "$GAS" 'init()'
 send "$FUND" 'addWard(address,uint256,uint256)' "$RULES" 0.05ether 0.1ether
 send "$FUND" 'addWard(address,uint256,uint256)' "$GAS" 0.1ether 0.2ether
 echo "  -- фикс 11.11: сторож в реестре кормления (был (0,0) — молчал до смерти)"
-send "$FUND" 'addWard(address,uint256,uint256)' "$DOG" 0.1ether 0.03ether
-send "$FUND" 'setBurnRate(uint256)' 0.09ether
-echo "  -- посев склада 0.15 lREACT"
-send "$FUND" --value 0.15ether
+send "$FUND" 'addWard(address,uint256,uint256)' "$DOG" 0.15ether 0.08ether
+send "$FUND" 'setBurnRate(uint256)' 0.35ether
+echo "  -- посев склада 0.25 lREACT"
+send "$FUND" --value 0.25ether
 
 echo "== [5] Lasna: миграция сторожа на новый склад (pause→set→resume)"
 send "$DOG" 'pause()'
@@ -79,6 +80,7 @@ send "$DOG" 'subscribeWardCry(address)' "$GAS"
 
 echo "== [6] конвертер (Lasna) / покупщик (Sepolia) → новый склад"
 send "$CONV" 'setFund(address)' "$FUND"
+send "$CONV" 'setTrigger(uint8,uint64)' 2 86400
 sendS "$BUYER" 'setFund(address)' "$FUND"
 
 echo "== [7] Lasna: баки (мозг 0.05, кассир 0.1)"
