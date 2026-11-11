@@ -29,9 +29,9 @@ contract ExecutorRebalanceForkTest is Test {
     address constant WETH = 0xC558DBdd856501FCd9aaF1E62eae57A9F0629a3c;
     uint256 constant LLTV = 0.915e18;
 
-    /// Mirrors the brain's constant (RulesEngine.CALLBACK_GAS_LIMIT);
+    /// Mirrors the brain constant (RulesEngine.CALLBACK_GAS_LIMIT);
     /// kept local so a bump there forces a conscious look here.
-    uint64 constant BRAIN_CALLBACK_GAS = 900_000;
+    uint64 constant BRAIN_CALLBACK_GAS = 1_200_000;
     /// The proxy's own bookkeeping shares the delivery gas budget.
     uint256 constant PROXY_OVERHEAD_MARGIN = 100_000;
 

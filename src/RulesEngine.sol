@@ -18,7 +18,13 @@ import {ISystemContract} from "reactive-lib-omni/interfaces/ISystemContract.sol"
 ///         processed-set of (chainId, blockNumber, topic0). P10:
 ///         noDelegateCall on owner entry points.
 contract RulesEngine is AbstractReactive {
-    uint64 public constant CALLBACK_GAS_LIMIT = 900_000;
+    /// @dev The heaviest callback in the system is the alarm rebalance:
+    ///      a full pool move measured 796k live (Aave supply with rewards
+    ///      accrual dominates). The delivery proxy keeps ~200k of the
+    ///      budget for itself (live 11.11: 900k budget → ~705k reached
+    ///      the call → revert swallowed by the proxy). 1.2M leaves the
+    ///      call ~1M — headroom for market-state variance.
+    uint64 public constant CALLBACK_GAS_LIMIT = 1_200_000;
 
     address public owner;
     address public executor;
