@@ -138,7 +138,7 @@ contract RulesEngineTest is Test {
             sys.callbackRequests(0);
         assertEq(cChainId, DEST_CHAIN);
         assertEq(cRecipient, executor);
-        assertEq(cGasLimit, 900_000);
+        assertEq(cGasLimit, 1_200_000); // proxy keeps ~200k of the headline (live 11.11)
         assertEq(cRequester, address(engine));
         assertEq(cPayload, abi.encodeWithSignature("rebalance(address,uint256)", address(0), uint256(100)));
     }
