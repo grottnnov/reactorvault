@@ -15,8 +15,14 @@ import {AbstractPayer} from "reactive-lib-omni/base/AbstractPayer.sol";
 contract MockFaucet is IFuelSource {
     uint256 public received;
     address public lastRecipient;
+    bool public broken;
+
+    function setBroken(bool broken_) external {
+        broken = broken_;
+    }
 
     function request(address recipient) external payable {
+        require(!broken, "faucet down");
         received += msg.value;
         lastRecipient = recipient;
     }
@@ -151,6 +157,37 @@ contract FuelConverterTest is Test {
         vm.warp(block.timestamp + 12 hours);
         _horizon(2, 300);
         assertEq(sys.callbackCount(), 2);
+    }
+
+    /// Incident 11.11 (live W2.1): the faucet reverted once at the
+    /// delivery moment — the whole buy rolled back, and with the depot
+    /// silent at a latched level the autocrow died forever. Contract
+    /// floor: a transient faucet failure must self-heal — the repeated
+    /// alert (the depot re-emits while the level holds) + the converter
+    /// cooldown produce a second order that succeeds.
+    function testTransientFaucetFailureSelfHeals() public {
+        faucet.setBroken(true);
+        _horizon(1, 100);
+        assertEq(sys.callbackCount(), 1);
+
+        // The delivery arrived; the buy reverted entirely (state rolled
+        // back — buysCount never moved, exactly the live picture).
+        vm.prank(SEPOLIA_PROXY);
+        vm.expectRevert("faucet down");
+        buyer.buyFuel(address(converter), 100);
+        assertEq(buyer.buysCount(), 0);
+
+        // The alert repeats after the cooldown window (boundary: the
+        // guard is inclusive — `ts <= last + cd` — so exactly 12h is
+        // still silent); the faucet has recovered; the retry buys.
+        vm.warp(block.timestamp + 12 hours + 1 seconds);
+        faucet.setBroken(false);
+        _horizon(1, 400);
+        assertEq(sys.callbackCount(), 2, "second order after cooldown");
+        vm.prank(SEPOLIA_PROXY);
+        buyer.buyFuel(address(converter), 400);
+        assertEq(buyer.buysCount(), 1);
+        assertEq(faucet.received(), 0.02 ether);
     }
 
     /// FuelBuyer: live-delivery guards — the proxy only (msg.sender)
