@@ -59,6 +59,7 @@ contract RulesEngine is AbstractReactive {
 
     error NotOwner();
     error AlreadyInitialized();
+    error NotInitialized();
     error ZeroAddress();
     error BadGasParams();
     error DelegateCallNotAllowed();
@@ -108,6 +109,19 @@ contract RulesEngine is AbstractReactive {
     {
         rules[ruleKey(chainId_, topic0_)] = Rule({active: active_, cooldown: cooldown_, lastFiredAt: 0});
         emit RuleSet(ruleKey(chainId_, topic0_), chainId_, topic0_, active_, cooldown_);
+    }
+
+    /// @notice Point the network at an emitter of an already-set rule.
+    ///         initialize wires only the FIRST rule; the alarm-clock
+    ///         rule (the cron emitter, W2.2) arrives this way — the
+    ///         live W2.1 brain lacked this hatch and had to be
+    ///         redeployed for it. Requires initialization: a
+    ///         subscription without a callback destination would waste
+    ///         paid deliveries.
+    function subscribe(uint256 chainId_, address origin_, uint256 topic0_) external onlyOwner noDelegateCall {
+        if (!initialized) revert NotInitialized();
+        SYSTEM.subscribe(chainId_, origin_, topic0_, REACTIVE_IGNORE, REACTIVE_IGNORE, REACTIVE_IGNORE);
+        emit Subscribed(chainId_, origin_, topic0_);
     }
 
     function setExecutor(address executor_) external onlyOwner noDelegateCall {

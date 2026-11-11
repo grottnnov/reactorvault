@@ -88,6 +88,36 @@ contract RulesEngineTest is Test {
         engine.initialize(origin, SOURCE_CHAIN, RATE_CHANGE_TOPIC, executor, DEST_CHAIN, COOLDOWN);
     }
 
+    /// The alarm-clock rule (cron emitter, W2.2) arrives AFTER
+    /// initialize: setRule writes the rule, subscribe points the network
+    /// at the emitter — the live brain has no such hatch, which forced
+    /// its redeploy. A naked subscribe before initialize (no callback
+    /// destination yet) is refused.
+    function testSubscribeRequiresInitialization() public {
+        RulesEngine fresh = new RulesEngine();
+        vm.expectRevert(RulesEngine.NotInitialized.selector);
+        fresh.subscribe(SOURCE_CHAIN, origin, RATE_CHANGE_TOPIC);
+    }
+
+    function testSubscribeAddsAlarmEmitter() public {
+        uint256 cronTopic = uint256(keccak256("Cron(uint256)"));
+        address cronEmitter = makeAddr("cronEmitter");
+
+        vm.prank(stranger);
+        vm.expectRevert(RulesEngine.NotOwner.selector);
+        engine.subscribe(SOURCE_CHAIN, cronEmitter, cronTopic);
+
+        engine.setRule(SOURCE_CHAIN, cronTopic, true, 3 hours);
+        engine.subscribe(SOURCE_CHAIN, cronEmitter, cronTopic);
+        assertEq(sys.subscriptionCount(), 2, "second emitter wired");
+
+        _react(SOURCE_CHAIN, RATE_CHANGE_TOPIC, 100);
+        assertEq(engine.firedCount(), 1);
+        _react(SOURCE_CHAIN, cronTopic, 100);
+        assertEq(engine.firedCount(), 2, "the alarm rule fires too");
+        assertEq(sys.callbackCount(), 2);
+    }
+
     function testReactOnlyFromSystem() public {
         vm.prank(stranger);
         vm.expectRevert();
