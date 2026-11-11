@@ -72,22 +72,28 @@ depot autonomously.
 | `ReliefFund v6` | Lasna | fuel depot: ward registry, real-number feeding, horizon alerts |
 | `Watchdog v6` | Reactive | cron patrol + cry relay, zero idle cost |
 
-### Live testnet stand (W2, deployed 2026-11-09)
+### Live testnet stand (W2.2, deployed 2026-11-11)
 
 | Contract | Chain | Address |
 |---|---|---|
-| RulesEngine | Lasna testnet | `0x927781c5A6a80d8267414fBaA0Db3Db4a2e30bB8` |
-| GasPayer | Lasna testnet | `0x5d097e8c865344fbEC6df3D545A90a4E43d4345A` |
-| FuelConverter | Lasna testnet | `0x8D5e5EdCEf7b016c74131CcD0F58D2dd3C708D19` |
-| ReliefFund v6 | Lasna testnet | `0xd76C87E0EAA3373AaAb57E54adBb6DDD6ACa42BD` |
-| Watchdog v6 | Lasna testnet | `0x5a3c11170dE808dF89319bC00ABbb5729e708b8E` |
-| VaultCore | Sepolia | `0xD3a2EbA7E1d4Eaa19B51ce6428fb30722d34a7e1` |
-| Executor | Sepolia | `0x7689B19793F167FCb68e9Acdc6bc2F658d673243` |
-| FuelBuyer | Sepolia | `0xeE85da38A555b7e94c5dcdD7Da1dD05ceb713e7a` |
+| RulesEngine (subscribe hatch, 1.2M callback gas) | Lasna testnet | `0x0D05bDab2480e2c915A8aE4ACaD30B17c66B1cFA` |
+| GasPayer v2.1 (executor rewirable) | Lasna testnet | `0xfccf439DAB2a4dcE34E2FAabdB395EEB4C2ed0ef` |
+| ReliefFund v6.x (horizon re-emits while held) | Lasna testnet | `0x0DBbA5673272AEffaF9D5095CD3E65504f9e1B0c` |
+| Watchdog v6.2 | Lasna testnet | `0x479ea63Ff2DFc4C553611BE0d87445EFf2C62136` |
+| FuelConverter | Lasna testnet | `0xe9393939bCa7d559077c8F8835F600b38e959747` |
+| AssetVault | Sepolia | `0x49D76fc16130DEe93c2BE760e2FBcdEe8765fa15` |
+| GasVault (battery) | Sepolia | `0xF72f7cdAD29fE63c9Bf9E3a753f625958D84a199` |
+| Executor v2 | Sepolia | `0x469247bb21b8AE30CAC6324b7F209926EA097423` |
+| AavePoolAdapter (WETH) | Sepolia | `0x6b1Df2d2a56Dc219E333E1B0d47f7f8c9d3Bc959` |
+| MorphoPoolAdapter (own WETH/WETH market, 1:1 oracle, LLTV 91.5%) | Sepolia | `0x8D916adaf036084cEF84945B505Ee9D87718638a` |
+| OneToOneOracle | Sepolia | `0x69fFF7C44763918C0399991928F421654AF21D7A` |
+| FuelBuyer | Sepolia | `0xd76C87E0EAA3373AaAb57E54adBb6DDD6ACa42BD` |
 
-End-to-end proof on deploy day: a 0.01 ETH deposit → pocket split →
-brain `firedCount=1` (Lasna) → callback → executor `rebalanceCount=1`
-(Sepolia) — a full deposit-to-reaction cycle in under a minute.
+End-to-end proof on deploy day: a deposit → brain fires (Lasna) →
+callback → executor rebalances (Sepolia) → the capital is placed in
+Aave WETH through the pool adapter. The alarm-clock rule (cron, daily
+cooldown) re-checks rates locally at execution time and moves capital
+only above a 1% APY spread.
 
 ## Build & test
 
