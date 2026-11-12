@@ -34,7 +34,7 @@ for pair in "brain $RULES" "cashier $GAS" "dog $DOG" "converter $CONV" "depot $F
   EFF=$(( R > D ? R - D : 0 ))
   note "$1: reserve=$(wei "$R") debt=$(wei "$D") eff=$(wei "$EFF")"
   [ "$D" -gt 0 ] && alarm "$1 в долге $(wei "$D") — доставка его колбеков стоит (К1)"
-  [ "$1" != depot ] && [ "$EFF" -lt 50000000000000000 ] && alarm "$1 eff < 0.05 — голодный карман"
+  [ "$1" != depot ] && [ "$EFF" -lt 30000000000000000 ] && alarm "$1 eff < 0.03 — ниже цены реакции+заказа 1.2M (инцидент #14: реверт на заказе, газ в пустоту)"
 done
 
 # --- склад: натив (кормит патруль), горизонт, счётчики ---
@@ -52,7 +52,10 @@ note "depot events за 2 тика (блоки $T0..$BLK): ${EV:-0}"
 [ "${EV:-0}" -eq 0 ] && alarm "патруль молчал 2 тика — реакции стоп или склад пуст (трейс по правилу К8→К5)"
 
 # --- Sepolia: результаты колбеков (очередь К7) ---
-note "executor: rebalanceCount=$(cast call "$EXEC" 'rebalanceCount()(uint256)' --rpc-url "$RPC_S" 2>/dev/null | awk '{print $1}') tankedEth=$(cast call "$EXEC" 'totalTankedEth()(uint256)' --rpc-url "$RPC_S" 2>/dev/null | awk '{print $1}') ETHbal=$(cast from-wei "$(cast balance "$EXEC" --rpc-url "$RPC_S" 2>/dev/null || echo 0)")"
+EXEETH=$(cast from-wei "$(cast balance "$EXEC" --rpc-url "$RPC_S" 2>/dev/null || echo 0)")
+note "executor: rebalanceCount=$(cast call "$EXEC" 'rebalanceCount()(uint256)' --rpc-url "$RPC_S" 2>/dev/null | awk '{print $1}') tankedEth=$(cast call "$EXEC" 'totalTankedEth()(uint256)' --rpc-url "$RPC_S" 2>/dev/null | awk '{print $1}') ETHbal=$EXEETH"
+[ "$(echo "$EXEETH < 0.002" | bc)" = 1 ] \
+  && alarm "ETH исполнителя < 0.002 — приём колбеков неоплатоприёмен (К1, инцидент #9: биллинг получателя)"
 note "buyer: buysCount=$(cast call "$BUYER" 'buysCount()(uint256)' --rpc-url "$RPC_S" 2>/dev/null | awk '{print $1}')"
 
 # --- кошельки оператора ---
