@@ -41,6 +41,13 @@ mustCode() { # $1=address $2=name $3=rpc
 deployTo() { # $1=source $2=rpc $3..=constructor-args; echoes the address
   OUT=$(forge create "$1" --broadcast --rpc-url "$2" --private-key "$PK" \
     --constructor-args "${@:3}" 2>&1)
+  # Lasna estimator dies on large creation code ("contract creation code
+  # storage out of gas", w22 incident #5): retry with an explicit generous
+  # gas limit — unused gas is refunded, the nonce survives the estimate fail
+  if ! echo "$OUT" | grep -aq 'Deployed to:'; then
+    OUT=$(forge create "$1" --broadcast --rpc-url "$2" --private-key "$PK" \
+      --gas-limit 2000000 --gas-price 50gwei --constructor-args "${@:3}" 2>&1)
+  fi
   echo "$OUT" | grep -aE 'Error|error' | head -3
   echo "$OUT" | awk '/Deployed to:/ {print $NF}' | tr -d '[:space:]'
 }

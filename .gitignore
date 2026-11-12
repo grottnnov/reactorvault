@@ -3,3 +3,5 @@ cache/
 broadcast/
 .env
 docs/buildathon/evidence/secrets*
+sensor-report.txt
+sensor-cron.log
