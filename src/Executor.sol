@@ -177,6 +177,16 @@ contract Executor is AbstractCallback {
         _checkEth();
     }
 
+    /// @notice Pay off the callback-proxy debt from the balance and lift
+    ///         the delivery pause. Incident #15 (12.11): a delivery
+    ///         attempt at an empty tank leaves a debt; debt > 0 = the
+    ///         proxy holds all deliveries (InDebt) and plain top-ups do
+    ///         NOT clear it — only this payment does. Anyone may call:
+    ///         the funds only ever go to the proxy for our own debt.
+    function coverDebt() external {
+        _coverDebt();
+    }
+
     function _checkEth() private {
         uint256 bal = address(this).balance;
         if (bal < ethLowThreshold) {

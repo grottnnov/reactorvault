@@ -58,6 +58,10 @@ EXEETH=$(cast from-wei "$(cast balance "$EXEC" --rpc-url "$RPC_S" 2>/dev/null ||
 note "executor: rebalanceCount=$(cast call "$EXEC" 'rebalanceCount()(uint256)' --rpc-url "$RPC_S" 2>/dev/null | awk '{print $1}') tankedEth=$(cast call "$EXEC" 'totalTankedEth()(uint256)' --rpc-url "$RPC_S" 2>/dev/null | awk '{print $1}') ETHbal=$EXEETH"
 [ "$(echo "$EXEETH < 0.002" | bc)" = 1 ] \
   && alarm "ETH исполнителя < 0.002 — приём колбеков неоплатоприёмен (К1, инцидент #9: биллинг получателя)"
+EXDEBT=$(cast call 0xAa14d9Cd0f788Ca23d11805986C1d8bd035D23b4 'debt(address)(uint256)' "$EXEC" --rpc-url "$RPC_S" 2>/dev/null | awk '{print $1}')
+note "executor proxy-debt: ${EXDEBT:-0}"
+[ "${EXDEBT:-0}" -gt 0 ] \
+  && alarm "долг исполнителя перед прокси >0 = пауза ВСЕХ доставок к нему — позвать coverDebt() (инцидент #15)"
 note "buyer: buysCount=$(cast call "$BUYER" 'buysCount()(uint256)' --rpc-url "$RPC_S" 2>/dev/null | awk '{print $1}')"
 
 # --- кошельки оператора ---

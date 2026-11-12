@@ -6,6 +6,7 @@ import {AssetVault, IAssetVault} from "../src/AssetVault.sol";
 import {GasVault} from "../src/GasVault.sol";
 import {Executor} from "../src/Executor.sol";
 import {MockPool} from "./mocks/MockPool.sol";
+import {MockCallbackProxy} from "./mocks/MockCallbackProxy.sol";
 import {IPayable} from "reactive-lib-omni/interfaces/IPayable.sol";
 
 /// @dev Executor v2 (ADR-v2 + ADR-EXPANSION §2): the assetVault+gasVault
@@ -238,5 +239,46 @@ contract DelegateCaller {
                 revert(add(ret, 32), mload(ret))
             }
         }
+    }
+}
+
+/// @dev Incident #15 (12.11): a delivery attempt at an empty tank leaves
+///      the recipient in debt to the callback proxy; debt > 0 = delivery
+///      pause (InDebt), and plain balance top-ups do NOT clear it — only
+///      the recipient itself paying via _coverDebt() does. Live proof:
+///      debt(executor) = 82e-9 ETH > 0 while balance was 0.017 ETH.
+contract ExecutorDebtTest is Test {
+    MockCallbackProxy proxy;
+    Executor executor;
+
+    address alice = makeAddr("alice");
+    address rulesEngine = makeAddr("rulesEngine");
+    address gasPayer = makeAddr("gasPayer");
+
+    function setUp() public {
+        proxy = new MockCallbackProxy();
+        AssetVault vault = new AssetVault();
+        GasVault battery = new GasVault();
+        executor = new Executor(rulesEngine, IPayable(payable(address(proxy))), vault, battery, gasPayer);
+        vault.authorizeExecutor(address(executor));
+        battery.authorizeExecutor(address(executor));
+    }
+
+    /// RED before the fix: no coverDebt() hatch exists — a funded
+    /// recipient with a dust debt stays paused forever.
+    function testCoverDebtClearsProxyDebtAndLiftsPause() public {
+        proxy.setDebt(address(executor), 82_000_000_000 wei); // the live 12.11 reading
+        vm.deal(address(executor), 0.005 ether);
+
+        assertGt(proxy.debt(address(executor)), 0, "precondition: in debt");
+        assertGt(address(executor).balance, proxy.debt(address(executor)), "precondition: funded");
+
+        // Anyone may call: the payment only ever goes to the proxy for
+        // our own debt — not a privileged action.
+        vm.prank(makeAddr("anyone"));
+        executor.coverDebt();
+
+        assertEq(proxy.debt(address(executor)), 0, "debt cleared - deliveries resume");
+        assertEq(address(executor).balance, 0.005 ether - 82_000_000_000 wei);
     }
 }
