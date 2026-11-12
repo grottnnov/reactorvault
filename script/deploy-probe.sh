@@ -25,6 +25,9 @@ PROBE_TANK=${PROBE_TANK:-0.1ether}
 
 : "${PROBE_DEPLOYER_PK:?PROBE_DEPLOYER_PK is required}"
 PK=$PROBE_DEPLOYER_PK
+# Probe source is parameterizable (the 12.11 gas-limit differential probe
+# reuses this script with PROBE_SRC=src/probe/CallbackProbe12.sol:CallbackProbe12)
+PROBE_SRC=${PROBE_SRC:-src/probe/CallbackProbe.sol:CallbackProbe}
 
 sendL() { cast send "$@" --rpc-url "$LASNA_RPC" --private-key "$PK" --json 2>/dev/null | python3 -c "import json,sys; r=json.load(sys.stdin); print('  tx', r['transactionHash'], r['status'])"; }
 sendS() { cast send "$@" --rpc-url "$SEPOLIA_RPC" --private-key "$PK" --json 2>/dev/null | python3 -c "import json,sys; r=json.load(sys.stdin); print('  tx', r['transactionHash'], r['status'])"; }
@@ -59,7 +62,7 @@ ETH_MIN=$(echo "${RECEIVER_FUND%ether} + 0.01" | bc)
 [ "$(echo "$(balS $A) > $ETH_MIN" | bc)" = "1" ] || { echo "NOT ENOUGH ETH on Sepolia (need > $ETH_MIN: CREATE + fund $RECEIVER_FUND)"; exit 1; }
 
 echo "== [1/6] CallbackProbe on Lasna (phase 2 = resubscribe to Cron10000 from react())"
-PROBE=$(deployTo src/probe/CallbackProbe.sol:CallbackProbe "$LASNA_RPC" "$CRON1000" "$CRON10000")
+PROBE=$(deployTo "$PROBE_SRC" "$LASNA_RPC" "$CRON1000" "$CRON10000")
 echo "  PROBE=$PROBE"
 [ -n "$PROBE" ] && mustCode "$PROBE" probe "$LASNA_RPC" || { echo "probe deploy failed"; exit 1; }
 
