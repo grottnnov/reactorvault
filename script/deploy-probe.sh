@@ -46,7 +46,7 @@ deployTo() { # $1=source $2=rpc $3..=constructor-args; echoes the address
   # gas limit — unused gas is refunded, the nonce survives the estimate fail
   if ! echo "$OUT" | grep -aq 'Deployed to:'; then
     OUT=$(forge create "$1" --broadcast --rpc-url "$2" --private-key "$PK" \
-      --gas-limit 2000000 --gas-price 50gwei --constructor-args "${@:3}" 2>&1)
+      --gas-limit 2000000 --gas-price 120gwei --priority-gas-price 118gwei --constructor-args "${@:3}" 2>&1)
   fi
   echo "$OUT" | grep -aE 'Error|error' | head -3
   echo "$OUT" | awk '/Deployed to:/ {print $NF}' | tr -d '[:space:]'
