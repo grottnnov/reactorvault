@@ -26,7 +26,9 @@ BLK=$(cast block-number --rpc-url "$RPC_L")
 note "lasna block: $BLK"
 
 # --- газовые карманы реактивных: резерв, долг, сытость ---
-for pair in "brain $RULES" "cashier $GAS" "dog $DOG" "converter $CONV" "depot $FUND"; do
+# порог цены: мозг заказывает колбеки 1.2M (~0.03 lREACT с газом),
+# остальные — 900k и меньше (~0.02); INCIDENTS #14
+for pair in "brain $RULES 30000000000000000" "cashier $GAS 20000000000000000" "dog $DOG 20000000000000000" "converter $CONV 20000000000000000" "depot $FUND 0"; do
   set -- $pair
   R=$(cast call "$OMNI" 'reserves(address)(uint256)' "$2" --rpc-url "$RPC_L" 2>/dev/null | awk '{print $1}')
   D=$(cast call "$OMNI" 'debts(address)(uint256)' "$2" --rpc-url "$RPC_L" 2>/dev/null | awk '{print $1}')
@@ -34,7 +36,7 @@ for pair in "brain $RULES" "cashier $GAS" "dog $DOG" "converter $CONV" "depot $F
   EFF=$(( R > D ? R - D : 0 ))
   note "$1: reserve=$(wei "$R") debt=$(wei "$D") eff=$(wei "$EFF")"
   [ "$D" -gt 0 ] && alarm "$1 в долге $(wei "$D") — доставка его колбеков стоит (К1)"
-  [ "$1" != depot ] && [ "$EFF" -lt 30000000000000000 ] && alarm "$1 eff < 0.03 — ниже цены реакции+заказа 1.2M (инцидент #14: реверт на заказе, газ в пустоту)"
+  [ "$3" -gt 0 ] && [ "$EFF" -lt "$3" ] && alarm "$1 eff < $(wei "$3") — ниже цены реакции+заказа (инцидент #14: реверт на заказе, газ в пустоту)"
 done
 
 # --- склад: натив (кормит патруль), горизонт, счётчики ---
