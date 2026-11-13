@@ -95,9 +95,17 @@ contract FuelBuyer is AbstractCallback {
     }
 
     /// @dev Top up the purchase fund (from the vault treasury). Donations
-    ///      above that go into the cause too (unlike the vault, this is a
-    ///      fuel tank — accounting is aggregate via totalSpentWei).
+    ///      above that go into the cause too (unlike the vault, this is
+    ///      a fuel tank — accounting is aggregate via totalSpentWei).
     receive() external payable override {}
+
+    /// @notice Settles callback-proxy debt from the buyer's own balance
+    ///         (incident #15 class, morning check 13.11: debt > 0 is a
+    ///         silent delivery pause; top-ups do NOT clear it). Anyone
+    ///         may call — the payment only ever covers our own debt.
+    function coverDebt() external {
+        _coverDebt();
+    }
 }
 
 /// @title FuelConverter — the auto-faucet (ADR-v2): a reactive listener

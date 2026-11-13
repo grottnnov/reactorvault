@@ -8,6 +8,7 @@ import {IReactive} from "reactive-lib-omni/interfaces/IReactive.sol";
 import {IPayable} from "reactive-lib-omni/interfaces/IPayable.sol";
 import {AbstractCallback} from "reactive-lib-omni/base/AbstractCallback.sol";
 import {AbstractPayer} from "reactive-lib-omni/base/AbstractPayer.sol";
+import {MockCallbackProxy} from "./mocks/MockCallbackProxy.sol";
 
 /// @dev Auto-faucet (ADR-v2): the depot's HorizonAlert → a fuel
 ///      purchase order. FuelBuyer: delivery guards and a balance clamp.
@@ -264,5 +265,43 @@ contract FuelConverterTest is Test {
         buyer.setFund(newFund);
         vm.stopPrank();
         assertEq(buyer.fund(), newFund);
+    }
+}
+
+/// @dev Incident #15 class (morning check 13.11): the buyer is a callback
+///      recipient — a dust debt to the callback proxy silently pauses all
+///      fuel deliveries to it, and plain ETH top-ups do NOT clear it.
+///      The buyer must expose the _coverDebt() hatch like the Executor.
+contract FuelBuyerDebtTest is Test {
+    MockCallbackProxy proxy;
+
+    function setUp() public {
+        proxy = new MockCallbackProxy();
+    }
+
+    function _deployBuyer() internal returns (FuelBuyer) {
+        address converter = makeAddr("converter");
+        address fund = makeAddr("fund");
+        return new FuelBuyer(IPayable(payable(address(proxy))), converter, fund);
+    }
+
+    /// RED before the fix: no coverDebt() hatch — a funded buyer with a
+    /// dust debt stays paused forever (the class that killed the 12.11
+    /// executor).
+    function testCoverDebtClearsProxyDebtAndLiftsPause() public {
+        FuelBuyer buyer = _deployBuyer();
+        proxy.setDebt(address(buyer), 82_000_000_000 wei);
+        vm.deal(address(buyer), 0.02 ether);
+
+        assertGt(proxy.debt(address(buyer)), 0, "precondition: in debt");
+        assertGt(address(buyer).balance, proxy.debt(address(buyer)), "precondition: funded");
+
+        // Anyone may call: the payment only ever goes to the proxy for
+        // our own debt — not a privileged action.
+        vm.prank(makeAddr("anyone"));
+        buyer.coverDebt();
+
+        assertEq(proxy.debt(address(buyer)), 0, "debt cleared - deliveries resume");
+        assertEq(address(buyer).balance, 0.02 ether - 82_000_000_000 wei);
     }
 }

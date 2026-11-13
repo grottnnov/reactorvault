@@ -25,6 +25,16 @@ note "=== ReactorVault stand sensor: $(date -u '+%F %T') UTC ==="
 BLK=$(cast block-number --rpc-url "$RPC_L")
 note "lasna block: $BLK"
 
+# --- цена выстрела подписки (REACTIVE-NETWORK-MECHANICS.md): ---
+# fee = p_base * C * (gas_used + K);Lasna: C=_gasPriceCoeffPer1000/1000,
+# K=_extraGas. Минимальный react (мгновенный ретёрн) ≈ p_base*(30k+K).
+COEFF=$(cast call "$OMNI" '_gasPriceCoeffPer1000()(uint256)' --rpc-url "$RPC_L" 2>/dev/null | awk '{print $1}')
+KGAS=$(cast call "$OMNI" '_extraGas()(uint256)' --rpc-url "$RPC_L" 2>/dev/null | awk '{print $1}')
+BFEES=$(cast basefee --rpc-url "$RPC_L" 2>/dev/null)
+COEFF=${COEFF:-0}; KGAS=${KGAS:-0}; BFEES=${BFEES:-0}
+MINRX=$(python3 -c "print(f'{$BFEES*($COEFF/1000)*(30000+$KGAS)/1e18:.4f}')")
+note "net price: coeff=$COEFF/1000 K=${KGAS} gas basefee=$(python3 -c "print(f'{$BFEES/1e9:.0f}')") gwei -> мин. выстрел подписки ≈ $MINRX lREACT"
+
 # --- газовые карманы реактивных: резерв, долг, сытость ---
 # порог цены: мозг заказывает колбеки 1.2M (~0.03 lREACT с газом),
 # остальные — 900k и меньше (~0.02); INCIDENTS #14
@@ -46,11 +56,20 @@ note "depot native (патрульный котёл): $(cast from-wei "$NF")"
   && alarm "натив склада < 0.02 — патруль не сможет кормить (К1, инцидент #11)"
 note "depot horizonLevel=$(cast call "$FUND" 'horizonLevel()(uint8)' --rpc-url "$RPC_L" 2>/dev/null | awk '{print $1}') fedCount=$(cast call "$FUND" 'fedCount()(uint256)' --rpc-url "$RPC_L" 2>/dev/null | awk '{print $1}')"
 
-# --- патруль жив? события склада за последние 2 тика (явный диапазон!) ---
+# --- патруль жив? события склада за последние 2 тика ---
+# К8 (обновление 13.11): lasna-rpc МОЛЧА возвращает пусто на диапазонах
+# >~2000-3000 блоков даже с явными числами — только чанки по 2000.
 T0=$(( BLK / 10000 * 10000 - 10000 ))
-EV=$(cast logs --from-block "$T0" --to-block "$BLK" --address "$FUND" --rpc-url "$RPC_L" --json 2>/dev/null \
-     | python3 -c "import json,sys;d=json.load(sys.stdin);d=d.get('logs',d.get('result',[])) if isinstance(d,dict) else d;print(len(d))")
-note "depot events за 2 тика (блоки $T0..$BLK): ${EV:-0}"
+EV=0
+C0=$T0
+while [ "$C0" -le "$BLK" ]; do
+  C1=$(( C0 + 1999 )); [ "$C1" -gt "$BLK" ] && C1=$BLK
+  N=$(cast logs --from-block "$C0" --to-block "$C1" --address "$FUND" --rpc-url "$RPC_L" --json 2>/dev/null \
+      | python3 -c "import json,sys;d=json.load(sys.stdin);d=d.get('logs',d.get('result',[])) if isinstance(d,dict) else d;print(len(d))" 2>/dev/null)
+  EV=$(( EV + ${N:-0} ))
+  C0=$(( C1 + 1 ))
+done
+note "depot events за 2 тика (блоки $T0..$BLK, чанки 2000): $EV"
 [ "${EV:-0}" -eq 0 ] && alarm "патруль молчал 2 тика — реакции стоп или склад пуст (трейс по правилу К8→К5)"
 
 # --- Sepolia: результаты колбеков (очередь К7) ---
