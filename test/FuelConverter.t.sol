@@ -252,6 +252,29 @@ contract FuelConverterTest is Test {
         );
     }
 
+    /// Incident #16 lesson: a retired converter must stop both ordering
+    /// and paying — deactivate() unsubscribes (no further react calls =
+    /// no minimum-shot fees) and in-flight deliveries are ignored.
+    function testDeactivateStopsOrdersAndSubscription() public {
+        uint256 subsBefore = sys.subscriptionCount();
+        _horizon(4, 300); // orders once, lastOrderAt set
+        assertEq(sys.callbackCount(), 1);
+
+        vm.prank(makeAddr("nobody"));
+        vm.expectRevert(FuelConverter.NotOwner.selector);
+        converter.deactivate();
+
+        vm.prank(converter.owner());
+        converter.deactivate();
+        assertFalse(converter.active());
+        assertEq(sys.subscriptionCount(), subsBefore - 1, "horizon subscription removed");
+
+        // even a delivered log must not order anything
+        uint256 cb = sys.callbackCount();
+        _horizon(4, 900);
+        assertEq(sys.callbackCount(), cb, "inactive converter ignores deliveries");
+    }
+
     /// ADR-EXPANSION: конвертер и покупщик — партнёры сменяемы;
     /// смена склада у конвертера переставляет подписку HorizonAlert.
     function testPartnersRewire() public {

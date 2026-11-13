@@ -146,9 +146,17 @@ contract FuelConverter is AbstractReactive {
 
     address public owner;
 
+    /// @notice Kill switch for the subscription (incident #16 lesson:
+    ///         a replaced converter stays subscribed forever — its
+    ///         reserve burns on every alert until it falls silent; an
+    ///         owner hatch lets us retire a pair cleanly).
+    bool public active = true;
+
     event FuelOrdered(uint256 originBlockNumber, uint8 level);
+    event Deactivated();
     error NotOwner();
     error ZeroAddress();
+    error Inactive();
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert NotOwner();
@@ -191,7 +199,18 @@ contract FuelConverter is AbstractReactive {
         cooldown = cooldown_;
     }
 
+    /// @notice Retire the converter: unsubscribe + ignore any in-flight
+    ///         deliveries. Reversible only by redeployment.
+    function deactivate() external onlyOwner {
+        active = false;
+        emit Deactivated();
+        SYSTEM.unsubscribe(SRC_CHAIN_ID, fund, horizonTopic, REACTIVE_IGNORE, REACTIVE_IGNORE, REACTIVE_IGNORE);
+    }
+
     function react(LogRecord calldata log_) external override onlySystem {
+        if (!active) {
+            return;
+        }
         if (log_.topic0 != horizonTopic) {
             return;
         }
