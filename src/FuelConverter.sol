@@ -120,7 +120,12 @@ contract FuelConverter is AbstractReactive {
     ///      trap caught before the W2 deploy).
     uint256 public constant SRC_CHAIN_ID = 5318007;
     uint256 public constant DEST_CHAIN_ID = 11155111;
-    uint64 public constant ACTION_GAS_LIMIT = 300_000;
+    /// @dev Gas-стрижка прокси (канон 11.11): до вызова доходит заказ
+    ///      минус ~200k удержаний прокси. Живая потребность buyFuel =
+    ///      260 850 (замер форком 13.11, инцидент #16: 300k не хватило,
+    ///      тихий OOG = диагностическое событие, buys=0 при «успешной»
+    ///      доставке). Заказ = потребность × ~2 + прокси-держатели.
+    uint64 public constant ACTION_GAS_LIMIT = 600_000;
 
     /// @notice Партнёры сменяемы owner'ом (ADR-EXPANSION): смена склада
     ///         переставляет подписку на его HorizonAlert в одном вызове.

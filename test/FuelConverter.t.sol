@@ -236,6 +236,22 @@ contract FuelConverterTest is Test {
         assertEq(buyer.buysCount(), 1);
     }
 
+    /// Incident #16 (13.11): ACTION_GAS_LIMIT must survive the proxy's
+    /// gas haircut — the proxy withholds ~200k of the ordered limit, and
+    /// the live buyFuel call needs 260 850 (fork measurement against
+    /// the real faucet; a mock would understate it). 300k caused a
+    /// silent OOG: a "successful" delivery, a diagnostic proxy event,
+    /// buys=0, the delivery fee paid. Invariant: what reaches the call
+    /// (order − 200k) ≥ live need × 1.4.
+    function testActionGasLimitSurvivesProxyHaircut() public {
+        uint256 liveBuyFuelGas = 260_850; // fork-measured 13.11
+        assertGe(
+            converter.ACTION_GAS_LIMIT() - 200_000,
+            liveBuyFuelGas * 14 / 10,
+            "order must leave >=1.4x the live buyFuel need after the ~200k proxy retention"
+        );
+    }
+
     /// ADR-EXPANSION: конвертер и покупщик — партнёры сменяемы;
     /// смена склада у конвертера переставляет подписку HorizonAlert.
     function testPartnersRewire() public {
