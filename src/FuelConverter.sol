@@ -141,8 +141,10 @@ contract FuelConverter is AbstractReactive {
     /// @dev The depot and its HorizonAlert live on Lasna — subscribe in
     ///      the SOURCE chain (5318007), not the destination one (a live
     ///      trap caught before the W2 deploy).
-    uint256 public constant SRC_CHAIN_ID = 5318007;
-    uint256 public constant DEST_CHAIN_ID = 11155111;
+    /// @notice Цепи — параметры деплоя (универсальность, 17.11):
+    ///         тестнет = 5318007/11155111, мейн = 1597/1.
+    uint256 public immutable SRC_CHAIN_ID;
+    uint256 public immutable DEST_CHAIN_ID;
     /// @dev Gas-стрижка прокси (канон 11.11): до вызова доходит заказ
     ///      минус ~200k удержаний прокси. Живая потребность buyFuel =
     ///      260 850 (замер форком 13.11, инцидент #16: 300k не хватило,
@@ -212,8 +214,18 @@ contract FuelConverter is AbstractReactive {
         _;
     }
 
-    constructor(address fund_, address buyer_, uint256 horizonTopic_, uint256 fundedTopic_, address faucetRvm_) {
+    constructor(
+        uint256 srcChainId_,
+        uint256 destChainId_,
+        address fund_,
+        address buyer_,
+        uint256 horizonTopic_,
+        uint256 fundedTopic_,
+        address faucetRvm_
+    ) {
         if (fund_ == address(0) || buyer_ == address(0) || faucetRvm_ == address(0)) revert ZeroAddress();
+        SRC_CHAIN_ID = srcChainId_;
+        DEST_CHAIN_ID = destChainId_;
         owner = msg.sender;
         fund = fund_;
         buyer = buyer_;

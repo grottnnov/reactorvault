@@ -24,7 +24,7 @@ contract GasPayerTest is Test {
         vm.etch(OMNI_SYSTEM, address(impl).code);
         sys = OmniMockSystem(payable(OMNI_SYSTEM));
 
-        gp = new GasPayer(executor, vault, T_ETHLOW, T_RESERVE);
+        gp = new GasPayer(11155111, executor, vault, T_ETHLOW, T_RESERVE);
         gp.init();
         vm.deal(address(gp), 10 ether);
         vm.warp(2 hours);
@@ -261,7 +261,7 @@ contract GasPayerTest is Test {
 /// @dev Cashier v2: owner parameters.
 contract GasPayerParamsTest is Test {
     function testTariffGuards() public {
-        GasPayer gp = new GasPayer(makeAddr("e"), makeAddr("v"), 1, 2);
+        GasPayer gp = new GasPayer(11155111, makeAddr("e"), makeAddr("v"), 1, 2);
         vm.prank(gp.owner());
         gp.setTariff(110, 1 ether, 0.005 ether, 1 hours);
         vm.prank(gp.owner());

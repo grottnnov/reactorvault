@@ -16,7 +16,9 @@ import {ISystemContract} from "reactive-lib-omni/interfaces/ISystemContract.sol"
 ///         (GasReserveUpdated), not the executor.
 ///         Idempotency: a processed-set of (chainId, blockNumber, topic0).
 contract GasPayer is AbstractReactive {
-    uint256 public constant DEST_CHAIN_ID = 11155111;
+    /// @notice Цепь-назначения колбеков долива — параметр деплоя
+    ///         (универсальность цепей, 17.11); на тестнете = 11155111.
+    uint256 public immutable destChainId;
     uint64 public constant ACTION_GAS_LIMIT = 1_000_000;
 
     /// @notice Партнёры сменяемы owner'ом (ADR-EXPANSION: гварды —
@@ -70,7 +72,8 @@ contract GasPayer is AbstractReactive {
         _;
     }
 
-    constructor(address executor_, address vault_, uint256 ethLowTopic_, uint256 reserveTopic_) {
+    constructor(uint256 destChainId_, address executor_, address vault_, uint256 ethLowTopic_, uint256 reserveTopic_) {
+        destChainId = destChainId_;
         if (executor_ == address(0) || vault_ == address(0)) revert ZeroAddress();
         owner = msg.sender;
         executor = executor_;
@@ -89,8 +92,8 @@ contract GasPayer is AbstractReactive {
         emit PartnerRewired("executor", executor, executor_);
         address old = executor;
         executor = executor_;
-        SYSTEM.unsubscribe(DEST_CHAIN_ID, old, ethLowTopic, REACTIVE_IGNORE, REACTIVE_IGNORE, REACTIVE_IGNORE);
-        SYSTEM.subscribe(DEST_CHAIN_ID, executor_, ethLowTopic, REACTIVE_IGNORE, REACTIVE_IGNORE, REACTIVE_IGNORE);
+        SYSTEM.unsubscribe(destChainId, old, ethLowTopic, REACTIVE_IGNORE, REACTIVE_IGNORE, REACTIVE_IGNORE);
+        SYSTEM.subscribe(destChainId, executor_, ethLowTopic, REACTIVE_IGNORE, REACTIVE_IGNORE, REACTIVE_IGNORE);
     }
 
     /// @notice Смена эмиттера резерва (батареи): подписка переезжает —
@@ -101,14 +104,14 @@ contract GasPayer is AbstractReactive {
         emit PartnerRewired("reserveEmitter", vault, vault_);
         address old = vault;
         vault = vault_;
-        SYSTEM.unsubscribe(DEST_CHAIN_ID, old, reserveTopic, REACTIVE_IGNORE, REACTIVE_IGNORE, REACTIVE_IGNORE);
-        SYSTEM.subscribe(DEST_CHAIN_ID, vault_, reserveTopic, REACTIVE_IGNORE, REACTIVE_IGNORE, REACTIVE_IGNORE);
+        SYSTEM.unsubscribe(destChainId, old, reserveTopic, REACTIVE_IGNORE, REACTIVE_IGNORE, REACTIVE_IGNORE);
+        SYSTEM.subscribe(destChainId, vault_, reserveTopic, REACTIVE_IGNORE, REACTIVE_IGNORE, REACTIVE_IGNORE);
     }
 
     function init() external onlyOwner {
         // P2 fix: the emitter of GasReserveUpdated is GasVault, not the executor
-        SYSTEM.subscribe(DEST_CHAIN_ID, vault, reserveTopic, REACTIVE_IGNORE, REACTIVE_IGNORE, REACTIVE_IGNORE);
-        SYSTEM.subscribe(DEST_CHAIN_ID, executor, ethLowTopic, REACTIVE_IGNORE, REACTIVE_IGNORE, REACTIVE_IGNORE);
+        SYSTEM.subscribe(destChainId, vault, reserveTopic, REACTIVE_IGNORE, REACTIVE_IGNORE, REACTIVE_IGNORE);
+        SYSTEM.subscribe(destChainId, executor, ethLowTopic, REACTIVE_IGNORE, REACTIVE_IGNORE, REACTIVE_IGNORE);
     }
 
     function setTariff(uint256 marginNum_, uint256 capWei_, uint256 minWei_, uint64 cooldown_) external onlyOwner {
@@ -181,7 +184,7 @@ contract GasPayer is AbstractReactive {
         emit EthTankOrdered(need, margin);
         SYSTEM.requestCallbackV_1_0(
             ISystemContract.CallbackConfiguration_V_1_0({
-                chainId: DEST_CHAIN_ID,
+                chainId: destChainId,
                 recipient: executor,
                 gasLimit: ACTION_GAS_LIMIT,
                 payload: abi.encodeWithSignature("refuelEthTank(address,uint256,uint256)", address(0), need, margin)

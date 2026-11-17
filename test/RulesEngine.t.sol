@@ -107,7 +107,7 @@ contract RulesEngineTest is Test {
         vm.expectRevert(RulesEngine.NotOwner.selector);
         engine.subscribe(SOURCE_CHAIN, cronEmitter, cronTopic);
 
-        engine.setRule(SOURCE_CHAIN, cronTopic, true, 3 hours);
+        engine.setRule(SOURCE_CHAIN, cronTopic, true, 3 hours, DEST_CHAIN);
         engine.subscribe(SOURCE_CHAIN, cronEmitter, cronTopic);
         assertEq(sys.subscriptionCount(), 2, "second emitter wired");
 
@@ -144,7 +144,7 @@ contract RulesEngineTest is Test {
     }
 
     function testReactInactiveRuleSkipped() public {
-        engine.setRule(SOURCE_CHAIN, RATE_CHANGE_TOPIC, false, COOLDOWN);
+        engine.setRule(SOURCE_CHAIN, RATE_CHANGE_TOPIC, false, COOLDOWN, DEST_CHAIN);
         _react(SOURCE_CHAIN, RATE_CHANGE_TOPIC, 100);
         assertEq(engine.firedCount(), 0);
         assertEq(sys.callbackCount(), 0);
@@ -170,7 +170,7 @@ contract RulesEngineTest is Test {
     /// configured destination chain.
     function testReactSameTopicTwoChainsIndependent() public {
         // other chain gets a shorter cooldown (1h vs 6h)
-        engine.setRule(OTHER_CHAIN, RATE_CHANGE_TOPIC, true, 1 hours);
+        engine.setRule(OTHER_CHAIN, RATE_CHANGE_TOPIC, true, 1 hours, DEST_CHAIN);
 
         // fire both at t = 6h (setUp warp)
         _react(SOURCE_CHAIN, RATE_CHANGE_TOPIC, 100);
@@ -225,14 +225,40 @@ contract RulesEngineTest is Test {
         assertEq(engine.firedCount(), 2);
     }
 
-    /// ADR-EXPANSION §1: the destination chain is data — switching it
-    /// redirects every subsequent callback.
-    function testSetDestChainRedirectsCallback() public {
-        engine.setDestChain(OTHER_CHAIN);
+    /// v2 (универсальность цепей, 17.11): назначение живёт В ПРАВИЛЕ —
+    /// перенаправление = перезапись правила с новой цепью + исполнитель
+    /// в реестре. Глобальный сеттер — только дефолт для новых правил.
+    function testRuleLevelDestinationRouting() public {
+        // правило изначально на DEST_CHAIN (из initialize)
         _react(SOURCE_CHAIN, RATE_CHANGE_TOPIC, 100);
         (uint256 cChainId, address cRecipient,,,) = sys.callbackRequests(0);
-        assertEq(cChainId, OTHER_CHAIN);
+        assertEq(cChainId, DEST_CHAIN);
         assertEq(cRecipient, executor);
+
+        // подключаем вторую сеть: исполнитель на OTHER_CHAIN + правило
+        // той же подписки перенаправляем туда
+        address executorBase = makeAddr("executorBase");
+        vm.startPrank(engine.owner());
+        engine.setExecutor(OTHER_CHAIN, executorBase);
+        engine.setRule(SOURCE_CHAIN, RATE_CHANGE_TOPIC, true, COOLDOWN, OTHER_CHAIN);
+        vm.stopPrank();
+
+        vm.warp(block.timestamp + COOLDOWN + 1);
+        _react(SOURCE_CHAIN, RATE_CHANGE_TOPIC, 200);
+        (cChainId, cRecipient,,,) = sys.callbackRequests(1);
+        assertEq(cChainId, OTHER_CHAIN, "redirected per-rule");
+        assertEq(cRecipient, executorBase, "registry executor on that chain");
+    }
+
+    /// Цепь без зарегистрированного исполнителя — правило молчит
+    /// (ни одного оплаченного колбека в пустоту).
+    function testUnwiredDestinationStaysSilent() public {
+        vm.startPrank(engine.owner());
+        engine.setRule(SOURCE_CHAIN, RATE_CHANGE_TOPIC, true, COOLDOWN, 42161);
+        vm.stopPrank();
+        _react(SOURCE_CHAIN, RATE_CHANGE_TOPIC, 100);
+        assertEq(sys.callbackCount(), 0, "no executor wired for 42161");
+        assertEq(engine.firedCount(), 0);
     }
 
     event RuleFired(uint256 indexed topic0, uint256 originChainId, uint256 originBlockNumber);

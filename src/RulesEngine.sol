@@ -27,10 +27,15 @@ contract RulesEngine is AbstractReactive {
     uint64 public constant CALLBACK_GAS_LIMIT = 1_200_000;
 
     address public owner;
-    address public executor;
+
+    /// @notice v2 (универсальность цепей, директива 17.11): каждое
+    ///         правило несёт СВОЮ цепь-назначение, исполнители — реестр
+    ///         «destChainId → адрес». Новая сеть = setExecutor(chain,
+    ///         addr) + правило с destChain=chain. Ни одной цепи в коде.
+    mapping(uint256 => address) public executors;
 
     /// @notice Subscription source chain (set at initialize) and the
-    ///         callback destination chain — data, not constants.
+    ///         DEFAULT destination chain for rules (per-rule overrides).
     uint256 public sourceChainId;
     uint256 public destChainId;
 
@@ -40,6 +45,7 @@ contract RulesEngine is AbstractReactive {
         bool active;
         uint64 cooldown;
         uint64 lastFiredAt;
+        uint256 destChainId;
     }
 
     /// @dev Rule key = keccak256(origin chainId ‖ topic0). Two chains
@@ -100,21 +106,29 @@ contract RulesEngine is AbstractReactive {
         if (initialized) revert AlreadyInitialized();
         if (executor_ == address(0)) revert ZeroAddress();
         initialized = true;
-        executor = executor_;
+        executors[destChainId_] = executor_;
         sourceChainId = sourceChainId_;
         destChainId = destChainId_;
-        rules[ruleKey(sourceChainId_, rateChangeTopic_)] = Rule({active: true, cooldown: cooldown_, lastFiredAt: 0});
+        rules[ruleKey(sourceChainId_, rateChangeTopic_)] =
+            Rule({active: true, cooldown: cooldown_, lastFiredAt: 0, destChainId: destChainId_});
         SYSTEM.subscribe(sourceChainId_, origin_, rateChangeTopic_, REACTIVE_IGNORE, REACTIVE_IGNORE, REACTIVE_IGNORE);
         emit Subscribed(sourceChainId_, origin_, rateChangeTopic_);
     }
 
-    function setRule(uint256 chainId_, uint256 topic0_, bool active_, uint64 cooldown_)
+    function setRule(uint256 chainId_, uint256 topic0_, bool active_, uint64 cooldown_, uint256 destChainId_)
         external
         onlyOwner
         noDelegateCall
     {
-        rules[ruleKey(chainId_, topic0_)] = Rule({active: active_, cooldown: cooldown_, lastFiredAt: 0});
+        rules[ruleKey(chainId_, topic0_)] =
+            Rule({active: active_, cooldown: cooldown_, lastFiredAt: 0, destChainId: destChainId_});
         emit RuleSet(ruleKey(chainId_, topic0_), chainId_, topic0_, active_, cooldown_);
+    }
+
+    /// @notice Реестр исполнителей: цепь-назначение → инстанс на ней.
+    function setExecutor(uint256 destChainId_, address executor_) external onlyOwner noDelegateCall {
+        if (executor_ == address(0)) revert ZeroAddress();
+        executors[destChainId_] = executor_;
     }
 
     /// @notice Point the network at an emitter of an already-set rule.
@@ -130,13 +144,7 @@ contract RulesEngine is AbstractReactive {
         emit Subscribed(chainId_, origin_, topic0_);
     }
 
-    function setExecutor(address executor_) external onlyOwner noDelegateCall {
-        if (executor_ == address(0)) revert ZeroAddress();
-        executor = executor_;
-    }
-
-    /// @notice Destination chain of the callback — configured data
-    ///         (ADR-EXPANSION §1: per-chain Executor instances).
+    /// @notice Destination chain по умолчанию (ADR-EXPANSION §1).
     function setDestChain(uint256 destChainId_) external onlyOwner noDelegateCall {
         destChainId = destChainId_;
     }
@@ -180,12 +188,16 @@ contract RulesEngine is AbstractReactive {
             return;
         }
         rule.lastFiredAt = uint64(block.timestamp);
+        address executor = executors[rule.destChainId];
+        if (executor == address(0)) {
+            return; // цепь-назначение не подключена — правило молчит
+        }
         firedCount += 1;
         emit RuleFired(log_.topic0, log_.chainId, log_.blockNumber);
         bytes memory payload = abi.encodeWithSignature("rebalance(address,uint256)", address(0), log_.blockNumber);
         SYSTEM.requestCallbackV_1_0(
             ISystemContract.CallbackConfiguration_V_1_0({
-                chainId: destChainId, recipient: executor, gasLimit: CALLBACK_GAS_LIMIT, payload: payload
+                chainId: rule.destChainId, recipient: executor, gasLimit: CALLBACK_GAS_LIMIT, payload: payload
             })
         );
     }

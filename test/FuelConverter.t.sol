@@ -58,7 +58,7 @@ contract FuelConverterTest is Test {
         // buyer's future address -> converter (it needs the address)
         // -> buyer (the converter is already real, goes into immutable).
         address buyerAddr = _create1(address(this), vm.getNonce(address(this)) + 1);
-        converter = new FuelConverter(fund, buyerAddr, T_HORIZON, T_FUNDED, FAUCET_RVM);
+        converter = new FuelConverter(5318007, 11155111, fund, buyerAddr, T_HORIZON, T_FUNDED, FAUCET_RVM);
         buyer = new FuelBuyer(IPayable(payable(SEPOLIA_PROXY)), address(converter), fund);
         faucet = new MockFaucet();
 
