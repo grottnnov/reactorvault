@@ -1,0 +1,170 @@
+#!/usr/bin/env python3
+# reactive-mcp-d — обёртка Reactive MCP (mcp.rnk.dev, официальный
+# инструмент вендора): живая диагностика реактивных контрактов.
+#
+# Директива Сергея 17.11: ПЕРВЫЙ шаг диагностики сетевого поведения
+# (вместо ручной лестницы доки→форумы→зонды). Локальные каноны/исходники
+# читаются ДО этого инструмента; ручные зонды — если MCP не дал ответа.
+#
+# Команды (network: lasna по умолчанию, mainnet для мейна):
+#   diagnose <addr> [network]        — get_rc_health: долг, резервы,
+#                                       подписки, вердикт + рецепт
+#   subs <addr> [network]            — list_subscriptions: живой индекс
+#                                       фильтров (rnk_getFilters)
+#   trace-event <origin-tx> [net]    — trace_origin_event: почему
+#                                       прореагировал / НЕ прореагировал
+#   trace-tx <reactive-tx> [net]     — trace_reactive_tx: разбор tx
+#                                       (react-реверты, колбеки)
+#   explain <error|0x-data>          — explain_error: декод ошибки
+#   cost <addr> [network]            — estimate_cost: REACT/реакция,
+#                                       REACT/сутки, колбеки
+#   net [network]                    — get_network_info: реестр цепей
+#   validate <sub-args-json>         — validate_subscription
+#   tools                            — полный список инструментов сервера
+#   raw <tool> '<json-args>'         — прямой вызов любого инструмента
+#
+# Транспорт: streamable HTTP (SSE-ответы), сессия на один вызов,
+# stdlib-only. Выход: текст вердикта как есть (вендор отвечает
+# вердикт + уверенность + evidence + fix).
+import json
+import re
+import sys
+import urllib.request
+
+BASE = "https://mcp.rnk.dev/mcp"
+TIMEOUT = 180
+
+
+def rpc(method, params, sid=None, msg_id=None):
+    payload = {"jsonrpc": "2.0", "method": method, "params": params}
+    if msg_id is not None:
+        payload["id"] = msg_id
+    req = urllib.request.Request(
+        BASE,
+        data=json.dumps(payload).encode(),
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+        },
+    )
+    if sid:
+        req.add_header("Mcp-Session-Id", sid)
+    with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+        sid = r.headers.get("Mcp-Session-Id") or sid
+        raw = r.read().decode()
+    out = None
+    for line in raw.splitlines():
+        if line.startswith("data: "):
+            out = json.loads(line[6:])
+    return out, sid
+
+
+class Mcp:
+    def __init__(self):
+        _, self.sid = rpc(
+            "initialize",
+            {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "reactive-mcp-d", "version": "0.1"},
+            },
+            msg_id=1,
+        )
+        rpc("notifications/initialized", {}, sid=self.sid)
+        self._tools = None
+
+    @property
+    def tools(self):
+        if self._tools is None:
+            res, self.sid = rpc("tools/list", {}, sid=self.sid, msg_id=2)
+            self._tools = {t["name"]: t for t in res["result"]["tools"]}
+        return self._tools
+
+    def call(self, name, args):
+        if name not in self.tools:
+            sys.exit(f"нет такого инструмента: {name} (см. `reactive-mcp-d tools`)")
+        res, self.sid = rpc(
+            "tools/call", {"name": name, "arguments": args}, sid=self.sid, msg_id=3
+        )
+        if res is None:
+            sys.exit("пустой ответ сервера")
+        if "error" in res:
+            sys.exit(f"ошибка MCP: {res['error']}")
+        texts = [
+            c.get("text", "")
+            for c in res["result"].get("content", [])
+            if c.get("type") == "text"
+        ]
+        print("\n".join(texts) if texts else json.dumps(res["result"], ensure_ascii=False))
+
+    def fill(self, name, value, network):
+        """Собрать аргументы по схеме: первый строковый паттерн-0x получает
+        value, network добавляется если схема его знает."""
+        schema = self.tools[name].get("inputSchema", {})
+        props = schema.get("properties", {})
+        args = {}
+        used = False
+        for key, spec in props.items():
+            if not used and spec.get("type") == "string" and "0x" in spec.get("pattern", "0x"):
+                args[key] = value
+                used = True
+            elif key == "network" and network:
+                args[key] = network
+        if not used:
+            sys.exit(f"не нашёл куда положить аргумент в схеме {name}: {list(props)}")
+        return args
+
+
+def main():
+    argv = sys.argv[1:]
+    if not argv or argv[0] in ("-h", "--help"):
+        print(__doc__)
+        return
+    cmd, rest = argv[0], argv[1:]
+    mcp = Mcp()
+    net = "lasna"
+
+    if cmd == "tools":
+        for name, t in mcp.tools.items():
+            print(f"• {name} — {t.get('description', '')[:120]}")
+        return
+    if cmd == "raw":
+        if len(rest) < 1:
+            sys.exit("raw <tool> '<json-args>'")
+        args = json.loads(rest[1]) if len(rest) > 1 else {}
+        mcp.call(rest[0], args)
+        return
+    if cmd == "net":
+        if rest:
+            net = rest[0]
+        mcp.call("get_network_info", {"network": net} if "network" in mcp.tools["get_network_info"].get("inputSchema", {}).get("properties", {}) else {})
+        return
+    if cmd == "explain":
+        if not rest:
+            sys.exit("explain <error|0x…>")
+        mcp.call("explain_error", mcp.fill("explain_error", rest[0], None))
+        return
+
+    # команды с <addr|hash> [network]
+    if not rest:
+        sys.exit("нужен адрес/хэш (см. --help)")
+    value = rest[0]
+    if len(rest) > 1:
+        net = rest[1]
+    table = {
+        "diagnose": "get_rc_health",
+        "subs": "list_subscriptions",
+        "trace-event": "trace_origin_event",
+        "trace-tx": "trace_reactive_tx",
+        "cost": "estimate_cost",
+        "validate": "validate_subscription",
+    }
+    if cmd not in table:
+        sys.exit(f"неизвестная команда: {cmd} (см. --help)")
+    tool = table[cmd]
+    args = mcp.fill(tool, value, net)
+    mcp.call(tool, args)
+
+
+if __name__ == "__main__":
+    main()
