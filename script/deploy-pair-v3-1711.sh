@@ -22,6 +22,18 @@
 #   [6] .env: старая пара → W2_CONVERTER_V2_RETIRED/W2_BUYER_V2_RETIRED,
 #       новые → W2_CONVERTER/W2_BUYER; сенсор; позитив-сверки
 #
+# ФАКТ выполнения 17.11 (15:18-15:40 UTC): buys=3 подтверждён живьём
+# (тик 8 580 001 → заказ 8 580 002 → покупка → выплата крана 2.0 за
+# 4 блока). Отклонения от скрипта: (а) у A@Lasna не хватило lREACT на
+# газ деплоя (0.15 < ~0.5; узел отвечал «storage out of gas») —
+# самозаправка краном 0.01 ETH → +1.05 lREACT (tx 0x2e184d9f…);
+# (б) шаг [1] касса падал на 'deposit()' (нет такой функции — перевод);
+# (в) шаги [2]-[5] выполнены вручную той же сессией (форк-anvil
+# подтвердил диагноз газа). Стартовый резерв конвертера 0.1 lREACT
+# (depositTo от A) — сенсор GREEN. Итог: conv3 0x63ae…2A15
+# (precompute 1:1), buyer3 0xAD9a…EA88, касса 0.04, подписки ×2
+# (MCP: proven), старая пара retired, ward-реестр переведён.
+#
 # Environment: DEPLOYER_PRIVATE_KEY, .env (W2_FUND, W2_CONVERTER,
 # W2_BUYER).
 set -uo pipefail
@@ -66,10 +78,9 @@ bal()   { cast from-wei "$(cast balance "$1" --rpc-url "$2" 2>/dev/null)"; }
 
 echo "== [0] гварды окна и бюджеты"
 BUYS=$(cast call "$BUY_OLD" 'buysCount()(uint256)' --rpc-url "$RPC_SEP" | awk '{print $1}')
-[ "${BUYS:-0}" -ge 3 ] || { echo "❌ buysCount=$BUYS < 3 — окно ещё не открылось (ждём ~12:40 UTC 17.11). STOP"; exit 1; }
+[ "${BUYS:-0}" -ge 3 ] || { echo "❌ buysCount=$BUYS < 3 — окно ещё не открылось. STOP"; exit 1; }
 echo "  ✅ старый покупщик buysCount=$BUYS"
-LAST=$(cast from-wei "$(cast call "$CONV_OLD" 'lastOrderAt()(uint64)' --rpc-url "$RPC_LASNA" 2>/dev/null)")
-echo "  A@Sepolia=$(bal $A $RPC_SEP) ETH (нужно ≥0.045), A@Lasna=$(bal $A $RPC_LASNA) lREACT (нужно ≥0.1)"
+echo "  A@Sepolia=$(bal $A $RPC_SEP) ETH (нужно ≥0.045), A@Lasna=$(bal $A $RPC_LASNA) lREACT (нужно ≥0.6 на газ деплоя)"
 N=$(cast nonce "$A" --rpc-url "$RPC_LASNA")
 CONV3=$(pre "$N"); echo "  precompute конвертер v3 (Lasna N=$N) = $CONV3"
 
@@ -78,7 +89,8 @@ BUY3=$(depS "src/FuelConverter.sol:FuelBuyer" "$PROXY $CONV3 $FUND")
 [ -n "$BUY3" ] || { echo "❌ buyer deploy failed"; exit 1; }
 echo "  ✅ покупщик v3-пары = $BUY3"
 sendS "$BUY3" 'setFaucet(address)' "$FAUCET"
-sendS "$BUY3" 'deposit()' --value 40000000000000000
+# касса = перевод на receive() покупщика (deposit() у него НЕТ — правка 17.11)
+sendS "$BUY3" --value 40000000000000000
 
 echo "== [2] Lasna: конвертер v3 (нонсы: между precompute и деплоем ни одного tx)"
 CONV_REAL=$(depL "src/FuelConverter.sol:FuelConverter" "$FUND $BUY3 $T_HORIZON $T_FUNDED $FAUCET_RVM")
