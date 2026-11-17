@@ -110,7 +110,12 @@ contract CallbackProbe12 is AbstractReactive {
             emit ProbeReact2(log_.blockNumber, pings2);
             if (pings2 >= MAX_PINGS2) {
                 SYSTEM.unsubscribe(
-                    ORIGIN_CHAIN_ID, SYSTEM_EVENTS_EMITTER, resubTopic, REACTIVE_IGNORE, REACTIVE_IGNORE, REACTIVE_IGNORE
+                    ORIGIN_CHAIN_ID,
+                    SYSTEM_EVENTS_EMITTER,
+                    resubTopic,
+                    REACTIVE_IGNORE,
+                    REACTIVE_IGNORE,
+                    REACTIVE_IGNORE
                 );
                 emit ProbeFinished(pingCount, pings2);
                 return;
