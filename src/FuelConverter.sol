@@ -33,13 +33,20 @@ contract FuelBuyer is AbstractCallback {
     uint256 public buysCount;
     uint256 public totalSpentWei;
 
+    /// @notice ADR-PURCHASE-SAFETY B2: рунбук-стоп — пауза покупок
+    ///         без вывода средств (SCSVS G1.7). Стоп-пара: pause() здесь
+    ///         + deactivate() конвертера (одна рунбук-операция).
+    bool public paused;
+
     event FuelBought(uint256 ethSpent, address indexed fund);
     event FaucetSet(address faucet);
     event FundRewired(address indexed from, address to);
+    event PauseSet(bool paused);
 
     error NotOwner();
     error ZeroAddress();
     error BuyFailed();
+    error Paused();
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert NotOwner();
@@ -71,6 +78,17 @@ contract FuelBuyer is AbstractCallback {
         buyAmountWei = wei_;
     }
 
+    /// @notice Рунбук-стоп: никаких покупок, пока пауза не снята.
+    function pause() external onlyOwner {
+        paused = true;
+        emit PauseSet(true);
+    }
+
+    function unpause() external onlyOwner {
+        paused = false;
+        emit PauseSet(false);
+    }
+
     /// @notice Purchase order: ETH goes to the faucet (from the balance
     ///         topped up by the vault's withdrawTreasury), lREACT lands
     ///         on the depot (fund). Called by the converter's callback;
@@ -83,6 +101,7 @@ contract FuelBuyer is AbstractCallback {
         onlyServiceProvider
         onlyCallbackSender(sender_)
     {
+        if (paused) revert Paused();
         uint256 spent = address(this).balance < buyAmountWei ? address(this).balance : buyAmountWei;
         if (spent == 0) {
             revert BuyFailed();
@@ -108,9 +127,13 @@ contract FuelBuyer is AbstractCallback {
     }
 }
 
-/// @title FuelConverter — the auto-faucet (ADR-v2): a reactive listener
-///        for the depot's horizon. HorizonAlert (level ≥ 1, days < 30) →
-///        order FuelBuyer.buyFuel on Sepolia. Retries happen on the next
+/// @title FuelConverter v3 — the auto-faucet (ADR-v2 + ADR-PURCHASE-SAFETY
+///        B2): a reactive listener for the depot's horizon. HorizonAlert
+///        (level ≥ 1, days < 30) → order FuelBuyer.buyFuel on Sepolia.
+///        v3 adds the rate stop: a second subscription to the depot's
+///        Funded (faucet-payer filter) observes every payout; below
+///        MIN_PAYOUT_PER_BUY → BadRate + orders frozen until the owner
+///        hatch. Retries happen on the next
 ///        escalation (the depot re-emits HorizonAlert on every patrol
 ///        tick while the level holds; converter idempotency is
 ///        per-block).
@@ -136,6 +159,32 @@ contract FuelConverter is AbstractReactive {
 
     /// @notice topic0 of HorizonAlert(uint256,uint256,uint256,uint8)
     uint256 public immutable horizonTopic;
+
+    /// @notice ADR-PURCHASE-SAFETY B2 — стоп-курс. Вторая подписка:
+    ///          Funded(address indexed from, uint256 amount) склада
+    ///          (Lasna); внутри react фильтр «отправитель = кран»
+    ///          (topic1 = faucetRvm, живой замер 16.11, блок 8 490 015).
+    uint256 public immutable fundedTopic;
+    address public immutable faucetRvm;
+
+    /// @notice Минимум выплаты на покупку (lREACT, WAD): фиксированный
+    ///          параметр, НЕ автокалибровка (Gelato-норматив). Источник:
+    ///          курс 2.0/покупку (замер 16.11), жор 0.6/день; убыточный
+    ///          режим крана 1:12.7 = 0.25 — отсекается.
+    uint256 public constant MIN_PAYOUT_PER_BUY = 1e18;
+
+    /// @notice Выплата ниже минимума один раз → заказы остановлены до
+    ///          разбора человеком (реактивация — owner-люк).
+    bool public rateStopped;
+
+    /// @notice Телеметрия для сенсора: бегущее среднее выплаты lREACT
+    ///          на покупку (на решение НЕ влияет).
+    uint256 public rateEma;
+    uint256 public payouts;
+
+    event RateObserved(uint256 payout, uint256 rateEma);
+    event BadRate(uint256 payout, uint256 minimum);
+    event RateStopCleared();
 
     /// @dev Idempotency: one order per escalation block.
     mapping(uint256 => bool) public orderedAtBlock;
@@ -163,24 +212,27 @@ contract FuelConverter is AbstractReactive {
         _;
     }
 
-    constructor(address fund_, address buyer_, uint256 horizonTopic_) {
-        if (fund_ == address(0) || buyer_ == address(0)) revert ZeroAddress();
+    constructor(address fund_, address buyer_, uint256 horizonTopic_, uint256 fundedTopic_, address faucetRvm_) {
+        if (fund_ == address(0) || buyer_ == address(0) || faucetRvm_ == address(0)) revert ZeroAddress();
         owner = msg.sender;
         fund = fund_;
         buyer = buyer_;
         horizonTopic = horizonTopic_;
+        fundedTopic = fundedTopic_;
+        faucetRvm = faucetRvm_;
     }
 
-    /// @notice Смена склада: подписка на HorizonAlert переезжает
-    ///         (отписка старого эмиттера + подписка нового). CEI: поле
-    ///         и событие до внешних вызовов SYSTEM.
+    /// @notice Смена склада: ОБЕ подписки переезжают (HorizonAlert +
+    ///         Funded) — отписка старого эмиттера + подписка нового.
+    ///         CEI: поля и события до внешних вызовов SYSTEM.
     function setFund(address fund_) external onlyOwner {
         if (fund_ == address(0)) revert ZeroAddress();
         emit PartnersRewired(fund_, buyer);
         address old = fund;
         fund = fund_;
-        SYSTEM.unsubscribe(SRC_CHAIN_ID, old, horizonTopic, REACTIVE_IGNORE, REACTIVE_IGNORE, REACTIVE_IGNORE);
+        _unsubscribeFund(old);
         SYSTEM.subscribe(SRC_CHAIN_ID, fund_, horizonTopic, REACTIVE_IGNORE, REACTIVE_IGNORE, REACTIVE_IGNORE);
+        SYSTEM.subscribe(SRC_CHAIN_ID, fund_, fundedTopic, REACTIVE_IGNORE, REACTIVE_IGNORE, REACTIVE_IGNORE);
     }
 
     /// @notice Смена покупщика (адресат колбека покупки) — без передеплоя.
@@ -192,6 +244,7 @@ contract FuelConverter is AbstractReactive {
 
     function init() external onlyOwner {
         SYSTEM.subscribe(SRC_CHAIN_ID, fund, horizonTopic, REACTIVE_IGNORE, REACTIVE_IGNORE, REACTIVE_IGNORE);
+        SYSTEM.subscribe(SRC_CHAIN_ID, fund, fundedTopic, REACTIVE_IGNORE, REACTIVE_IGNORE, REACTIVE_IGNORE);
     }
 
     function setTrigger(uint8 level_, uint64 cooldown_) external onlyOwner {
@@ -199,20 +252,40 @@ contract FuelConverter is AbstractReactive {
         cooldown = cooldown_;
     }
 
-    /// @notice Retire the converter: unsubscribe + ignore any in-flight
-    ///         deliveries. Reversible only by redeployment.
+    /// @notice Реактивация заказов после BadRate-стопа: только owner,
+    ///          только после разбора человеком (ADR: «плохой курс ≠
+    ///          транзиент» — авто-retry запрещён).
+    function clearRateStop() external onlyOwner {
+        rateStopped = false;
+        emit RateStopCleared();
+    }
+
+    /// @notice Retire the converter: unsubscribe BOTH topics + ignore
+    ///         any in-flight deliveries. Reversible only by redeployment.
     function deactivate() external onlyOwner {
         active = false;
         emit Deactivated();
-        SYSTEM.unsubscribe(SRC_CHAIN_ID, fund, horizonTopic, REACTIVE_IGNORE, REACTIVE_IGNORE, REACTIVE_IGNORE);
+        _unsubscribeFund(fund);
+    }
+
+    function _unsubscribeFund(address fund_) private {
+        SYSTEM.unsubscribe(SRC_CHAIN_ID, fund_, horizonTopic, REACTIVE_IGNORE, REACTIVE_IGNORE, REACTIVE_IGNORE);
+        SYSTEM.unsubscribe(SRC_CHAIN_ID, fund_, fundedTopic, REACTIVE_IGNORE, REACTIVE_IGNORE, REACTIVE_IGNORE);
     }
 
     function react(LogRecord calldata log_) external override onlySystem {
         if (!active) {
             return;
         }
+        if (log_.topic0 == fundedTopic) {
+            _observePayout(log_);
+            return;
+        }
         if (log_.topic0 != horizonTopic) {
             return;
+        }
+        if (rateStopped) {
+            return; // BadRate-стоп: заказы заморожены до clearRateStop()
         }
         (,,, uint8 level) = abi.decode(log_.data, (uint256, uint256, uint256, uint8));
         if (level < triggerLevel) {
@@ -238,5 +311,22 @@ contract FuelConverter is AbstractReactive {
                 payload: abi.encodeWithSignature("buyFuel(address,uint256)", address(0), log_.blockNumber)
             })
         );
+    }
+
+    /// @dev Телеметрия курса: Funded от крана (topic1-фильтр) →
+    ///      бегущее среднее; выплата ниже минимума → BadRate + стоп
+    ///      заказов (один раз; дальше молчит до люка).
+    function _observePayout(LogRecord calldata log_) private {
+        if (log_.topic1 != uint256(uint160(faucetRvm))) {
+            return; // платит не кран — не наш сигнал
+        }
+        uint256 payout = abi.decode(log_.data, (uint256));
+        payouts += 1;
+        rateEma = rateEma == 0 ? payout : (rateEma + payout) / 2;
+        emit RateObserved(payout, rateEma);
+        if (!rateStopped && payout < MIN_PAYOUT_PER_BUY) {
+            rateStopped = true;
+            emit BadRate(payout, MIN_PAYOUT_PER_BUY);
+        }
     }
 }

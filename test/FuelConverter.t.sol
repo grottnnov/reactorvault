@@ -2,6 +2,7 @@
 pragma solidity ^0.8.29;
 
 import {Test} from "forge-std/Test.sol";
+import {Vm} from "forge-std/Vm.sol";
 import {FuelConverter, FuelBuyer, IFuelSource} from "../src/FuelConverter.sol";
 import {OmniMockSystem} from "./mocks/OmniMockSystem.sol";
 import {IReactive} from "reactive-lib-omni/interfaces/IReactive.sol";
@@ -36,6 +37,10 @@ contract FuelConverterTest is Test {
     ///      testLiveDeliveryFromProxy.
     address internal constant SEPOLIA_PROXY = 0xAa14d9Cd0f788Ca23d11805986C1d8bd035D23b4;
     uint256 constant T_HORIZON = uint256(keccak256("HorizonAlert(uint256,uint256,uint256,uint8)"));
+    uint256 constant T_FUNDED = uint256(keccak256("Funded(address,uint256)"));
+    /// @dev Живой Lasna-плательщик крана: Funded(block 8 490 015,
+    ///      16.11, выплата 2.0 lREACT за покупку 0.02 ETH — курс 1:100).
+    address internal constant FAUCET_RVM = 0x5cBC52A390E69D9193996AeBFB53F7b97DB6cf51;
 
     OmniMockSystem sys;
     FuelConverter converter;
@@ -53,7 +58,7 @@ contract FuelConverterTest is Test {
         // buyer's future address -> converter (it needs the address)
         // -> buyer (the converter is already real, goes into immutable).
         address buyerAddr = _create1(address(this), vm.getNonce(address(this)) + 1);
-        converter = new FuelConverter(fund, buyerAddr, T_HORIZON);
+        converter = new FuelConverter(fund, buyerAddr, T_HORIZON, T_FUNDED, FAUCET_RVM);
         buyer = new FuelBuyer(IPayable(payable(SEPOLIA_PROXY)), address(converter), fund);
         faucet = new MockFaucet();
 
@@ -101,16 +106,42 @@ contract FuelConverterTest is Test {
         buyer.buyFuel{value: 0}(address(converter), blockNumber_);
     }
 
-    /// Init: a single subscription to the depot's horizon.
-    /// The depot lives on Lasna (5318007) — HorizonAlert is emitted
-    /// there; a subscription in chain 11155111 would listen to a
-    /// nonexistent emitter (a live trap caught during W2 deploy prep).
+    /// @dev Живая доставка Funded: платит кран (topic1) на склад.
+    function _funded(address payer, uint256 amount, uint256 blockNumber_) internal {
+        vm.prank(OMNI_SYSTEM);
+        converter.react(
+            IReactive.LogRecord({
+                chainId: 5318007,
+                contractAddress: fund,
+                topic0: T_FUNDED,
+                topic1: uint256(uint160(payer)),
+                topic2: 0,
+                topic3: 0,
+                data: abi.encode(amount),
+                blockNumber: blockNumber_,
+                opCode: 0,
+                blockHash: 0,
+                txHash: 0,
+                logIndex: 0
+            })
+        );
+    }
+
+    /// Init: TWO subscriptions to the depot — the horizon AND the
+    /// payout telemetry. Both live on Lasna (5318007); a subscription
+    /// in chain 11155111 would listen to a nonexistent emitter (a live
+    /// trap caught during W2 deploy prep — the Sepolia-emitter
+    /// premortem of ADR-PURCHASE-SAFETY).
     function testInitSubscribes() public view {
-        assertEq(sys.subscriptionCount(), 1);
+        assertEq(sys.subscriptionCount(), 2);
         (uint256 sChain, address sContract, uint256 sTopic0,,,,) = sys.subscriptions(0);
         assertEq(sChain, 5318007, "fund lives on Lasna, not Sepolia");
         assertEq(sContract, fund);
         assertEq(sTopic0, T_HORIZON);
+        (sChain, sContract, sTopic0,,,,) = sys.subscriptions(1);
+        assertEq(sChain, 5318007, "Funded is emitted on Lasna, not the destination chain");
+        assertEq(sContract, fund);
+        assertEq(sTopic0, T_FUNDED);
     }
 
     /// Full path: a level-1 escalation → order → callback → the faucet
@@ -253,8 +284,9 @@ contract FuelConverterTest is Test {
     }
 
     /// Incident #16 lesson: a retired converter must stop both ordering
-    /// and paying — deactivate() unsubscribes (no further react calls =
-    /// no minimum-shot fees) and in-flight deliveries are ignored.
+    /// and paying — deactivate() unsubscribes BOTH topics (no further
+    /// react calls = no minimum-shot fees) and in-flight deliveries
+    /// are ignored.
     function testDeactivateStopsOrdersAndSubscription() public {
         uint256 subsBefore = sys.subscriptionCount();
         _horizon(4, 300); // orders once, lastOrderAt set
@@ -267,7 +299,7 @@ contract FuelConverterTest is Test {
         vm.prank(converter.owner());
         converter.deactivate();
         assertFalse(converter.active());
-        assertEq(sys.subscriptionCount(), subsBefore - 1, "horizon subscription removed");
+        assertEq(sys.subscriptionCount(), subsBefore - 2, "both subscriptions removed");
 
         // even a delivered log must not order anything
         uint256 cb = sys.callbackCount();
@@ -295,7 +327,7 @@ contract FuelConverterTest is Test {
 
         assertEq(converter.fund(), newFund);
         assertEq(converter.buyer(), newBuyerAddr);
-        assertEq(sys.subscriptionCount(), before, "rewire: -old +new horizon emitter");
+        assertEq(sys.subscriptionCount(), before, "rewire: -old +new, BOTH topics move with the fund");
 
         // покупщик: получатель топлива сменяем
         vm.startPrank(buyer.owner());
@@ -304,6 +336,112 @@ contract FuelConverterTest is Test {
         buyer.setFund(newFund);
         vm.stopPrank();
         assertEq(buyer.fund(), newFund);
+    }
+
+    // ------------------------------------------------ ADR-PURCHASE-SAFETY B2
+
+    /// Рунбук-стоп (G1.7): pause() покупщика — покупка ревертится,
+    /// деньги не трогаются; unpause() возвращает контур в строй.
+    function testPauseBlocksBuyAndResumes() public {
+        _horizon(1, 100);
+        assertEq(sys.callbackCount(), 1);
+
+        vm.prank(makeAddr("nobody"));
+        vm.expectRevert(FuelBuyer.NotOwner.selector);
+        buyer.pause();
+
+        vm.prank(buyer.owner());
+        buyer.pause();
+        assertTrue(buyer.paused());
+        vm.prank(SEPOLIA_PROXY);
+        vm.expectRevert(FuelBuyer.Paused.selector);
+        buyer.buyFuel(address(converter), 100);
+
+        vm.prank(buyer.owner());
+        buyer.unpause();
+        assertFalse(buyer.paused());
+        vm.prank(SEPOLIA_PROXY);
+        buyer.buyFuel(address(converter), 100);
+        assertEq(buyer.buysCount(), 1);
+        assertEq(faucet.received(), 0.02 ether);
+    }
+
+    /// Стоп-курс: выплата крана 0.9 при минимуме 1.0 → BadRate +
+    /// заказы остановлены; следующая тревога НЕ заказывает;
+    /// реактивация — только owner-люк после разбора.
+    function testBadRateStopsOrdersAndHatchRevives() public {
+        _horizon(1, 100);
+        assertEq(sys.callbackCount(), 1);
+
+        vm.expectEmit(true, true, true, true, address(converter));
+        emit FuelConverter.BadRate(0.9 ether, 1 ether);
+        _funded(FAUCET_RVM, 0.9 ether, 150);
+        assertTrue(converter.rateStopped(), "below minimum -> stopped");
+
+        // тревога после cooldown — молчит (плохой курс ≠ транзиент)
+        vm.warp(block.timestamp + 12 hours + 1 seconds);
+        _horizon(1, 200);
+        assertEq(sys.callbackCount(), 1, "no orders while rate-stopped");
+
+        // люк — только owner
+        vm.prank(makeAddr("nobody"));
+        vm.expectRevert(FuelConverter.NotOwner.selector);
+        converter.clearRateStop();
+
+        vm.prank(converter.owner());
+        converter.clearRateStop();
+        assertFalse(converter.rateStopped());
+        _horizon(1, 300);
+        assertEq(sys.callbackCount(), 2, "orders resume after the hatch");
+    }
+
+    /// Повторная плохая выплата после стопа НЕ пере-эммитит BadRate
+    /// (стоп залип до люка — «включение — owner-люк после разбора»).
+    function testBadRateStickyUntilHatch() public {
+        _funded(FAUCET_RVM, 0.9 ether, 100);
+        assertTrue(converter.rateStopped());
+
+        vm.recordLogs();
+        _funded(FAUCET_RVM, 0.5 ether, 200);
+        Vm.Log[] memory entries = vm.getRecordedLogs();
+        for (uint256 i; i < entries.length; i++) {
+            assertNotEq(
+                entries[i].topics[0], keccak256("BadRate(uint256,uint256)"), "no duplicate BadRate while stopped"
+            );
+        }
+        assertTrue(converter.rateStopped());
+    }
+
+    /// Фильтр «отправитель = кран»: Funded от чужого адреса — мимо
+    /// (никакой телеметрии, никакого стопа даже при мелкой выплате).
+    function testFundedFromStrangerIgnored() public {
+        address stranger = makeAddr("stranger");
+        _funded(stranger, 0.001 ether, 100);
+        assertEq(converter.payouts(), 0, "stranger payout ignored");
+        assertEq(converter.rateEma(), 0);
+        assertFalse(converter.rateStopped(), "a stranger cannot stop the circuit");
+
+        _horizon(1, 200);
+        assertEq(sys.callbackCount(), 1, "orders still flow");
+    }
+
+    /// Телеметрия: живая выплата 16.11 (2.0 за покупку) ложится в EMA;
+    /// вторая выплата усредняется; решение (заказы) не меняется.
+    function testRateEmaTelemetry() public {
+        _funded(FAUCET_RVM, 2.0 ether, 100);
+        assertEq(converter.payouts(), 1);
+        assertEq(converter.rateEma(), 2.0 ether);
+
+        _funded(FAUCET_RVM, 3.0 ether, 200);
+        assertEq(converter.payouts(), 2);
+        assertEq(converter.rateEma(), 2.5 ether, "running mean");
+        assertFalse(converter.rateStopped(), "healthy payouts never stop");
+    }
+
+    /// Граница минимума: ровно 1.0 — ещё здоровая выплата (строгий <).
+    function testBoundaryPayoutAtMinimumIsHealthy() public {
+        _funded(FAUCET_RVM, 1.0 ether, 100);
+        assertFalse(converter.rateStopped(), "exactly the minimum is acceptable");
     }
 }
 
