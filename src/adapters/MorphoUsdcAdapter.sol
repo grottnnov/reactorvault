@@ -148,6 +148,14 @@ contract MorphoUsdcAdapter {
         return principal;
     }
 
+    /// @notice Реальная стоимость позиции (растёт с процентами) —
+    ///         для NAV сейфа (доли юзеров).
+    function truePosition() external view returns (uint256) {
+        IMorphoUsdc.Market memory m = morpho.market(marketId);
+        uint256 shares = morpho.position(marketId, address(this)).supplyShares;
+        return (shares * uint256(m.totalSupplyAssets)) / uint256(m.totalSupplyShares);
+    }
+
     /// @notice Годовая ставка предложения: borrowRate × utilization × (1−fee).
     function supplyRatePerYear() external view returns (uint256) {
         IMorphoUsdc.Market memory m = morpho.market(marketId);

@@ -32,6 +32,23 @@ contract Erc20AssetVault {
     /// @notice Забронированная казна (в токене, лежит в балансе сейфа).
     uint256 public treasuryTaken;
 
+    /// ------------------------------------------------- ERC-4626-lite (17.11)
+    /// @notice Учёт долей юзеров (ADR-MULTI-ASSET-CHAINS): депозит
+    ///         минтит доли, redeem гасит; NAV = свободные (минус казна)
+    ///         + РЕАЛЬНЫЕ позиции пулов (растут с процентами).
+    ///         Защита от донат-инфляции первого депозита: виртуальный
+    ///         офсет VIRTUAL_UNITS в обеих частях пропорции (Solmate-
+    ///         паттерн); округления всегда в пользу сейфа.
+    uint256 public totalShares;
+    mapping(address => uint256) public shareOf;
+
+    /// @dev Офсет против атаки первого депозита: при пустом сейфе
+    ///      1 юнит актива ≠ гигантская доля; красный тест прилагается.
+    uint256 internal constant VIRTUAL_UNITS = 1_000_000;
+
+    event VaultDeposit(address indexed sender, address indexed owner, uint256 assets, uint256 shares);
+    event VaultRedeem(address indexed sender, address indexed receiver, address indexed owner, uint256 assets, uint256 shares);
+
     address[] public poolAdapters;
     mapping(address => bool) public isPoolAdapter;
     mapping(address => uint256) public inPoolOf;
@@ -65,6 +82,7 @@ contract Erc20AssetVault {
     error InsufficientInPool();
     error SettleMismatch();
     error Reentrancy();
+    error InsufficientShares();
 
     modifier notRecalling() {
         if (_recalling) revert Reentrancy();
@@ -118,25 +136,101 @@ contract Erc20AssetVault {
         return poolAdapters.length;
     }
 
-    /// @notice Депозит: юзер даёт approve, сейф забирает токен.
-    ///         Казна бронируется тут же и остаётся в сейфе.
+    /// @notice Депозит: юзер даёт approve, сейф забирает токен,
+    ///         минтит доли. Казна: fee-on-mint — комиссию платит
+    ///         ВХОДЯЩИЙ (доли минтятся на активы-минус-казна; старые
+    ///         держатели не платят за чужой вход — модель OZ fee-vault).
     function deposit(uint256 amount_) external noDelegateCall notRecalling {
         if (amount_ == 0) revert ZeroAmount();
         uint256 toTreasury = amount_ * treasuryBps / 10_000;
-        totalDeposited += amount_;
+        uint256 working = amount_ - toTreasury;
+        uint256 shares = _convertToShares(working);
+        if (shares == 0) revert ZeroAmount(); // пыль не минтит долей
+        totalShares += shares;
+        shareOf[msg.sender] += shares;
+        totalDeposited += working;
         if (toTreasury > 0) {
             treasuryTaken += toTreasury;
         }
+        emit VaultDeposit(msg.sender, msg.sender, amount_, shares);
         emit Deposited(msg.sender, amount_, toTreasury);
         _safeTransferFrom(msg.sender, address(this), amount_);
     }
 
-    /// @notice Свободный рабочий капитал: баланс минус забронированная
-    ///         казна — казна недоступна пулам (главная разница с ETH-сейфом,
-    ///         где казна сразу уезжает в батарею).
+    /// @notice Юзерские активы целиком: свободные ПО LEDGER (рабочие
+    ///         депозиты − в пулах; казна fee-on-mint в ledger НЕ входит)
+    ///         + реальные позиции пулов (с процентами). Прямой донат
+    ///         токена на сейф в NAV НЕ попадает — донат-атака первого
+    ///         депозита мертва и для больших сумм, не только в офсете.
+    function totalAssets() public view returns (uint256) {
+        uint256 free = totalDeposited - totalInPools();
+        uint256 len = poolAdapters.length;
+        uint256 invested;
+        for (uint256 i = 0; i < len; i++) {
+            (bool ok, bytes memory ret) = poolAdapters[i].staticcall(
+                abi.encodeWithSignature("truePosition()")
+            );
+            if (ok && ret.length >= 32) {
+                invested += abi.decode(ret, (uint256));
+            }
+        }
+        return free + invested;
+    }
+
+    /// @dev Свободный юзерский капитал по ledger: рабочие депозиты −
+    ///      в пулах (казна и донаты физически лежат, но не юзерские).
+    function _ledgerFree() internal view returns (uint256) {
+        return totalDeposited - totalInPools();
+    }
+
+    function _convertToShares(uint256 assets_) internal view returns (uint256) {
+        return (assets_ * (totalShares + VIRTUAL_UNITS)) / (totalAssets() + VIRTUAL_UNITS);
+    }
+
+    function _convertToAssets(uint256 shares_) internal view returns (uint256) {
+        return (shares_ * (totalAssets() + VIRTUAL_UNITS)) / (totalShares + VIRTUAL_UNITS);
+    }
+
+    function convertToShares(uint256 assets_) external view returns (uint256) {
+        return _convertToShares(assets_);
+    }
+
+    function convertToAssets(uint256 shares_) external view returns (uint256) {
+        return _convertToAssets(shares_);
+    }
+
+    /// @notice Выход юзера: гасит доли, при нехватке свободных — сам
+    ///         отзывает из пулов. «Выход, который работает всегда».
+    function redeem(uint256 shares_) external noDelegateCall notRecalling {
+        if (shares_ == 0) revert ZeroAmount();
+        if (shareOf[msg.sender] < shares_) revert InsufficientShares();
+        uint256 assets = _convertToAssets(shares_);
+        uint256 free = _ledgerFree();
+        if (free < assets) {
+            uint256 need = assets - free;
+            uint256 len = poolAdapters.length;
+            for (uint256 i = 0; i < len && need > 0; i++) {
+                address adapter = poolAdapters[i];
+                uint256 there = inPoolOf[adapter];
+                if (there > 0) {
+                    uint256 take = there < need ? there : need;
+                    _recall(adapter, take);
+                    need -= take;
+                }
+            }
+            if (need > 0) revert InsufficientFree();
+        }
+        totalShares -= shares_;
+        shareOf[msg.sender] -= shares_;
+        totalDeposited -= assets; // выведенное покидает ledger — NAV не раздувается
+        emit VaultRedeem(msg.sender, msg.sender, msg.sender, assets, shares_);
+        _safeTransfer(msg.sender, assets);
+    }
+
+    /// @notice Свободный рабочий капитал по ledger: депозиты − казна −
+    ///         в пулах (казна недоступна пулам; донаты не рабочие).
     function rebalanceTarget() external view returns (uint256 amount) {
-        uint256 bal = token.balanceOf(address(this));
-        amount = bal > treasuryTaken ? bal - treasuryTaken : 0;
+        amount = _ledgerFree();
     }
 
     /// @notice Пуш-модель: сейф сам передаёт токен адаптеру (никаких
@@ -144,9 +238,7 @@ contract Erc20AssetVault {
     function deployToPool(address adapter_, uint256 amount_) external onlyExecutor noDelegateCall notRecalling {
         if (!isPoolAdapter[adapter_]) revert AdapterUnknown();
         if (amount_ == 0) revert ZeroAmount();
-        uint256 bal = token.balanceOf(address(this));
-        uint256 free = bal > treasuryTaken ? bal - treasuryTaken : 0;
-        if (amount_ > free) revert InsufficientFree();
+        if (amount_ > _ledgerFree()) revert InsufficientFree();
         inPoolOf[adapter_] += amount_;
         emit DeployedToPool(adapter_, amount_);
         _safeTransfer(adapter_, amount_);

@@ -20,6 +20,10 @@ contract MockPool is IPoolAdapter {
         require(ok, "MockPool: transfer failed");
     }
 
+    function truePosition() external view returns (uint256) {
+        return address(this).balance; // principal в нативе
+    }
+
     function totalSupplied() external view override returns (uint256) {
         return supplied;
     }

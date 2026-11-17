@@ -32,11 +32,26 @@ contract AssetVault is IAssetVault {
     /// @notice Treasury share of every deposit, basis points (≤ 10_000).
     uint32 public treasuryBps;
 
-    /// @notice Everything ever deposited (incl. the routed treasury).
+    /// @notice Working deposits ever received (казна fee-on-mint
+    ///         уезжает в батарею и в ledger юзеров не входит).
     uint256 public totalDeposited;
 
     /// @notice The treasury share already routed to the battery.
     uint256 public treasurySent;
+
+    /// ------------------------------------------------- ERC-4626-lite (17.11)
+    /// @notice Учёт долей юзеров (ADR-MULTI-ASSET-CHAINS): депозит
+    ///         минтит доли на РАБОЧИЙ капитал (минус казна), redeem
+    ///         гасит; NAV = ledgerFree + реальные позиции пулов.
+    ///         Донаты эфира невозможны конструкцией (receive ревертит),
+    ///         офсет VIRTUAL_UNITS держит математику пустого сейфа.
+    uint256 public totalShares;
+    mapping(address => uint256) public shareOf;
+
+    uint256 internal constant VIRTUAL_UNITS = 1e12; // 1 μETH
+
+    event VaultDeposit(address indexed sender, address indexed owner, uint256 assets, uint256 shares);
+    event VaultRedeem(address indexed sender, address indexed receiver, address indexed owner, uint256 assets, uint256 shares);
 
     /// @notice Authorized pool adapters and per-adapter deployed capital.
     address[] public poolAdapters;
@@ -74,6 +89,8 @@ contract AssetVault is IAssetVault {
     error InsufficientFree();
     error InsufficientInPool();
     error SettleMismatch();
+    error InsufficientShares();
+    error ZeroShares();
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert NotOwner();
@@ -127,7 +144,7 @@ contract AssetVault is IAssetVault {
     function deployToPool(address adapter_, uint256 amount_) external override onlyExecutor noDelegateCall {
         if (!isPoolAdapter[adapter_]) revert AdapterUnknown();
         if (amount_ == 0) revert ZeroAmount();
-        if (amount_ > address(this).balance) revert InsufficientFree();
+        if (amount_ > totalDeposited - totalInPools()) revert InsufficientFree();
         inPoolOf[adapter_] += amount_;
         emit DeployedToPool(adapter_, amount_);
         IPoolAdapter(adapter_).supply{value: amount_}();
@@ -175,23 +192,77 @@ contract AssetVault is IAssetVault {
     function deposit() external payable noDelegateCall {
         if (msg.value == 0) revert ZeroAmount();
         uint256 toTreasury = msg.value * treasuryBps / 10_000;
-        totalDeposited += msg.value;
-        if (toTreasury > 0) {
-            treasurySent += toTreasury;
-        }
+        uint256 working = msg.value - toTreasury;
+        uint256 shares = (working * (totalShares + VIRTUAL_UNITS)) / (totalAssets() + VIRTUAL_UNITS);
+        if (shares == 0) revert ZeroShares();
+        totalShares += shares;
+        shareOf[msg.sender] += shares;
+        totalDeposited += working;
+        emit VaultDeposit(msg.sender, msg.sender, msg.value, shares);
         emit Deposited(msg.sender, msg.value, toTreasury);
         if (toTreasury > 0) {
+            treasurySent += toTreasury;
             if (address(gasVault) == address(0)) revert GasVaultNotSet();
             emit TreasurySent(toTreasury);
             gasVault.treasuryIn{value: toTreasury}();
         }
     }
 
+    /// @notice Юзерские активы: ledgerFree + реальные позиции пулов.
+    function totalAssets() public view returns (uint256) {
+        uint256 invested;
+        uint256 len = poolAdapters.length;
+        for (uint256 i = 0; i < len; i++) {
+            (bool ok, bytes memory ret) =
+                poolAdapters[i].staticcall(abi.encodeWithSignature("truePosition()"));
+            if (ok && ret.length >= 32) {
+                invested += abi.decode(ret, (uint256));
+            }
+        }
+        return totalDeposited - totalInPools() + invested;
+    }
+
+    function convertToShares(uint256 assets_) external view returns (uint256) {
+        return (assets_ * (totalShares + VIRTUAL_UNITS)) / (totalAssets() + VIRTUAL_UNITS);
+    }
+
+    function convertToAssets(uint256 shares_) external view returns (uint256) {
+        return (shares_ * (totalAssets() + VIRTUAL_UNITS)) / (totalShares + VIRTUAL_UNITS);
+    }
+
+    /// @notice Выход юзера: гасит доли, при нехватке свободных — сам
+    ///         отзывает из пулов. «Выход, который работает всегда».
+    function redeem(uint256 shares_) external noDelegateCall {
+        if (shares_ == 0) revert ZeroAmount();
+        if (shareOf[msg.sender] < shares_) revert InsufficientShares();
+        uint256 assets = (shares_ * (totalAssets() + VIRTUAL_UNITS)) / (totalShares + VIRTUAL_UNITS);
+        if (assets > totalDeposited - totalInPools()) {
+            uint256 need = assets - (totalDeposited - totalInPools());
+            uint256 len = poolAdapters.length;
+            for (uint256 i = 0; i < len && need > 0; i++) {
+                address adapter = poolAdapters[i];
+                uint256 there = inPoolOf[adapter];
+                if (there > 0) {
+                    uint256 take = there < need ? there : need;
+                    _recall(adapter, take);
+                    need -= take;
+                }
+            }
+            if (need > 0) revert InsufficientFree();
+        }
+        totalShares -= shares_;
+        shareOf[msg.sender] -= shares_;
+        totalDeposited -= assets;
+        emit VaultRedeem(msg.sender, msg.sender, msg.sender, assets, shares_);
+        (bool ok,) = msg.sender.call{value: assets}("");
+        if (!ok) revert TransferFailed();
+    }
+
     /// @notice Working capital (free): the safe's balance. Capital
     ///         deployed to pools is tracked in inPoolOf (it lives in
     ///         the adapters, not here).
     function rebalanceTarget() external view override returns (uint256 amount) {
-        amount = address(this).balance;
+        amount = totalDeposited - totalInPools(); // ledger: донатов нет конструкцией
     }
 
     /// @notice MVP scaffolding: a full sweep to the owner. Recalls

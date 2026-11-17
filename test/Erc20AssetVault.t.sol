@@ -165,6 +165,97 @@ contract Erc20AssetVaultTest is Test {
         assertEq(token.balanceOf(vault.owner()), D100);
     }
 
+    // ------------------------------------------------------- доли (4626-lite)
+
+    /// Первый депозит при пустом сейфе: доли = активы (без офсетных
+    /// искажений), пыль не минтится.
+    function testFirstDepositMintsProportionalShares() public {
+        vm.prank(user);
+        vault.deposit(D100);
+        assertEq(vault.totalShares(), D100, "empty vault: shares == assets");
+        assertEq(vault.shareOf(user), D100);
+        assertEq(vault.totalAssets(), D100, "NAV == assets");
+    }
+
+    /// Донат-атака первого депозита МЕРТВА: прямой перевод токена на
+    /// сейф не входит в NAV (ledger), доли жертвы честные, атакующий
+    /// забирает только своё.
+    function testDonationAttackNeutralized() public {
+        address attacker = makeAddr("attacker");
+        token.mint(attacker, 50_000_000); // 50 USDC
+        vm.startPrank(attacker);
+        token.approve(address(vault), type(uint256).max);
+        vault.deposit(1_000_000); // 1 USDC
+        token.transfer(address(vault), 49_000_000); // ДОНАТ 49 USDC — раздуть NAV
+        vm.stopPrank();
+
+        // жертва входит ПОСЛЕ «раздувания»
+        vm.prank(user);
+        vault.deposit(D100);
+        uint256 victimShares = vault.shareOf(user);
+        assertApproxEqAbs(victimShares, D100, 1_000, "fair shares despite donation");
+
+        // атакующий гасит свои доли — уносит только своё, без навара
+        uint256 attackerShares = vault.shareOf(attacker); // prank сгорает на вызове!
+        vm.prank(attacker);
+        vault.redeem(attackerShares);
+        assertApproxEqAbs(token.balanceOf(attacker), 1_000_000, 5_000, "no stolen yield");
+        // жертва не пострадала: её доля NAV сохранилась
+        assertApproxEqAbs(vault.convertToAssets(victimShares), D100, 60_000, "victim intact (offset-scale)");
+    }
+
+    /// Округления в пользу сейфа: вывод даёт не больше причитающегося.
+    function testRedeemRoundsInVaultFavor() public {
+        vm.prank(user);
+        vault.deposit(D100);
+        uint256 sh = vault.shareOf(user);
+        uint256 out = vault.convertToAssets(sh);
+        assertLe(out, D100, "never more than fair");
+    }
+
+    /// redeem сам отзывает из пулов, если свободных не хватает —
+    /// «выход работает всегда».
+    function testRedeemRecallsFromPoolsWhenFreeInsufficient() public {
+        vm.prank(user);
+        vault.deposit(D100);
+        MockPoolAdapter adapter = new MockPoolAdapter(token);
+        vm.startPrank(vault.owner());
+        vault.authorizePoolAdapter(address(adapter));
+        vault.authorizeExecutor(address(this));
+        vm.stopPrank();
+        vault.deployToPool(address(adapter), D100); // всё в пуле, свободно 0
+
+        uint256 sh = vault.shareOf(user);
+        vm.prank(user);
+        vault.redeem(sh);
+        assertApproxEqAbs(token.balanceOf(user), 1_000_000_000, 1_000, "full exit");
+        assertEq(vault.totalShares(), 0);
+        assertEq(vault.inPoolOf(address(adapter)), 0);
+    }
+
+    /// Казна не размывает юзеров: NAV считает активы МИНУС казну;
+    /// комиссия платится ДЕПОЗИТОРОМ (его доли стоят дешевле актива),
+    /// второй юзер входит по той же цене — размывания нет.
+    function testTreasuryDoesNotDilute() public {
+        vm.prank(vault.owner());
+        vault.setTreasuryBps(500);
+        vm.prank(user);
+        vault.deposit(D100); // казна 5, юзерских 95, долей 100
+        assertEq(vault.totalAssets(), D100 - 5_000_000, "NAV excludes treasury");
+
+        // второй юзер входит той же ценой; СВОЮ комиссию платит сам
+        address second = makeAddr("second");
+        token.mint(second, 95_000_000);
+        vm.startPrank(second);
+        token.approve(address(vault), type(uint256).max);
+        vault.deposit(95_000_000); // комиссия 4.75, рабочих 90.25
+        vm.stopPrank();
+        uint256 s2 = vault.shareOf(second);
+        assertApproxEqAbs(s2, 90_250_000, 100_000, "shares for working assets");
+        // доля первого ЦЕЛА: платит только входящий (fee-on-mint)
+        assertApproxEqAbs(vault.convertToAssets(vault.shareOf(user)), 95_000_000, 60_000, "first intact");
+    }
+
     /// Реентрансия: злой адаптер лезет в deployToPool из withdraw —
     /// гвард CEI обязан ревертить всю попытку.
     function testRecallReentrancyBlocked() public {
@@ -222,8 +313,9 @@ contract ReentrantAdapter {
 
     function withdraw(uint256) external returns (bool) {
         try vault.deployToPool(address(this), 1) {
-            // реентрансия прошла бы — её бы не поймал расчёт
-        } catch {
+        // реентрансия прошла бы — её бы не поймал расчёт
+        }
+            catch {
             // гвард отработал: попытка откатилась внутри адаптера
         }
         return true; // и тихо «успешно» возвращаемся без денег
@@ -239,6 +331,11 @@ contract MockPoolAdapter {
 
     constructor(MockERC20 token_) {
         token = token_;
+    }
+
+    /// NAV-слой: позиция адаптера = его баланс токена
+    function truePosition() external view returns (uint256) {
+        return token.balanceOf(address(this));
     }
 
     function setShortfall(uint256 s) external {

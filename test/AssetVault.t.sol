@@ -46,12 +46,38 @@ contract AssetVaultTest is Test {
         vault.setTreasuryBps(500); // 5%
         _deposit(1 ether);
 
-        assertEq(vault.totalDeposited(), 1 ether);
+        // fee-on-mint (17.11): totalDeposited считает РАБОЧИЙ капитал;
+        // казна уехала в батарею, доли наминчены на 0.95
+        assertEq(vault.totalDeposited(), 0.95 ether);
         assertEq(vault.treasurySent(), 0.05 ether);
         assertEq(address(vault).balance, 0.95 ether, "free = value - treasury");
         assertEq(battery.treasury(), 0.05 ether, "share in the battery");
         assertEq(vault.rebalanceTarget(), 0.95 ether);
-        assertEq(address(vault).balance + vault.treasurySent(), vault.totalDeposited(), "balance + sent == tracked");
+        assertEq(vault.totalShares(), 0.95 ether, "shares for working assets");
+        assertEq(address(vault).balance + vault.treasurySent(), vault.totalDeposited() + 0.05 ether, "physical == working + sent");
+    }
+
+    /// Доли: первый депозит при пустом сейфе — доли = рабочие активы.
+    function testSharesFirstDepositProportional() public {
+        _deposit(1 ether);
+        assertEq(vault.totalShares(), 1 ether);
+        assertEq(vault.shareOf(alice), 1 ether);
+        assertEq(vault.totalAssets(), 1 ether, "NAV == assets");
+    }
+
+    /// redeem отзывает из пулов при нехватке свободных — выход всегда.
+    function testRedeemRecallsFromPools() public {
+        _deposit(1 ether);
+        MockPool mp = _adapter();
+        _deploy(address(mp), 1 ether);
+
+        uint256 sh = vault.shareOf(alice);
+        uint256 before = alice.balance;
+        vm.prank(alice);
+        vault.redeem(sh);
+        assertEq(alice.balance - before, 1 ether, "full exit (delta)");
+        assertEq(vault.totalShares(), 0);
+        assertEq(vault.inPoolOf(address(mp)), 0);
     }
 
     /// Zero bps: nothing leaves the safe (ETH-only MVP default).
@@ -121,8 +147,10 @@ contract AssetVaultTest is Test {
     // ---------------------------------------------------------------
 
     function _invariant(string memory where) internal view {
+        // working-семантика: balance + inPools ≡ totalDeposited (рабочие);
+        // казна (treasurySent) уехала в батарею и в ledger не входит
         assertEq(
-            address(vault).balance + vault.totalInPools() + vault.treasurySent(),
+            address(vault).balance + vault.totalInPools(),
             vault.totalDeposited(),
             string.concat("invariant: ", where)
         );
