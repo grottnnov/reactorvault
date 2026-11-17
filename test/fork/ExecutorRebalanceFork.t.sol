@@ -55,14 +55,14 @@ contract ExecutorRebalanceForkTest is Test {
         IMorpho.MarketParams memory mp = _mp();
         IMorpho(MORPHO).createMarket(mp);
 
-        aaveAdapter = new AavePoolAdapter(AAVE_POOL, WETH);
-        morphoAdapter = new MorphoPoolAdapter(MORPHO, mp, IRM);
-        vm.deal(address(aaveAdapter), 0); // fork-address inheritance guard
-        vm.deal(address(morphoAdapter), 0);
-
         vault = new AssetVault();
         battery = new GasVault();
         executor = new Executor(brain, PROXY, vault, battery, cashier);
+
+        aaveAdapter = new AavePoolAdapter(address(vault), AAVE_POOL, WETH);
+        morphoAdapter = new MorphoPoolAdapter(address(vault), MORPHO, mp, IRM);
+        vm.deal(address(aaveAdapter), 0); // fork-address inheritance guard
+        vm.deal(address(morphoAdapter), 0);
 
         vault.setGasVault(battery);
         vault.setTreasuryBps(500);

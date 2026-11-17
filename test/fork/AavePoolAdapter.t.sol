@@ -26,7 +26,7 @@ contract AavePoolAdapterForkTest is Test {
         vm.createSelectFork(rpc);
 
         assertEq(IERC20Meta(WETH).symbol(), "WETH", "live check: the reserve must be WETH");
-        adapter = new AavePoolAdapter(AAVE_POOL, WETH);
+        adapter = new AavePoolAdapter(safe, AAVE_POOL, WETH);
         // A deterministic CREATE address can collide with a funded
         // account on a live fork — zero the inherited balance so the
         // settlement asserts measure only our flows.
@@ -71,5 +71,29 @@ contract AavePoolAdapterForkTest is Test {
         uint256 rate = adapter.supplyRatePerYear();
         assertGe(rate, 0);
         assertLe(rate, 100e18, "sanity bound");
+    }
+
+    /// Incident #19 (red first): a stranger must not be able to settle
+    /// the adapter's position to themselves — withdraw is vault-only
+    /// (the Uniswap v4 onlyPoolManager / Yearn onlyVault pattern).
+    function testForkWithdrawOnlyVault() public {
+        vm.deal(safe, 0.01 ether);
+        vm.prank(safe);
+        adapter.supply{value: 0.01 ether}();
+
+        address attacker = makeAddr("attacker");
+        vm.prank(attacker);
+        vm.expectRevert(AavePoolAdapter.NotVault.selector);
+        adapter.withdraw(0.01 ether);
+    }
+
+    /// Incident #19: foreign supply pollutes the settlement basis
+    /// (principal) — supply is vault-only too.
+    function testForkSupplyOnlyVault() public {
+        address attacker = makeAddr("attacker");
+        vm.deal(attacker, 0.01 ether);
+        vm.prank(attacker);
+        vm.expectRevert(AavePoolAdapter.NotVault.selector);
+        adapter.supply{value: 0.01 ether}();
     }
 }

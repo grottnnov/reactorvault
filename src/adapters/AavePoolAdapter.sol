@@ -47,7 +47,12 @@ interface IERC20Balance {
 ///         basis (what the safe deployed); interest accrues on top in
 ///         the aToken position and is swept by the owner hatch —
 ///         demo-scale simplification, recorded in the ADR.
+/// @dev Incident #19: supply/withdraw are vault-only — the money-holder
+///      checks the right itself (Uniswap v4 onlyPoolManager / Yearn
+///      onlyVault pattern; ToB: missing caller checks = failure #1).
 contract AavePoolAdapter is IPoolAdapter {
+    /// @notice The only address allowed to supply/withdraw (the safe).
+    address public immutable assetVault;
     IAavePool public immutable aavePool;
     IWETH9 public immutable weth;
     IERC20Balance public immutable aToken;
@@ -59,22 +64,31 @@ contract AavePoolAdapter is IPoolAdapter {
     error SettleMismatch();
     error TransferFailed();
     error NotOwner();
+    error NotVault();
+    error ZeroAddress();
 
-    constructor(address aavePool_, address weth_) {
+    modifier onlyVault() {
+        if (msg.sender != assetVault) revert NotVault();
+        _;
+    }
+
+    constructor(address assetVault_, address aavePool_, address weth_) {
+        if (assetVault_ == address(0)) revert ZeroAddress();
+        assetVault = assetVault_;
         aavePool = IAavePool(aavePool_);
         weth = IWETH9(weth_);
         aToken = IERC20Balance(_aTokenOf(aavePool_, weth_));
         owner = msg.sender;
     }
 
-    function supply() external payable override {
+    function supply() external payable override onlyVault {
         weth.deposit{value: msg.value}();
         weth.approve(address(aavePool), msg.value);
         aavePool.supply(address(weth), msg.value, address(this), 0);
         principal += msg.value;
     }
 
-    function withdraw(uint256 ethAmount) external override {
+    function withdraw(uint256 ethAmount) external override onlyVault {
         if (ethAmount > principal) revert AbovePrincipal();
         principal -= ethAmount;
         uint256 got = aavePool.withdraw(address(weth), ethAmount, address(this));

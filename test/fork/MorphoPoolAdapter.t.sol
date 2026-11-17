@@ -46,7 +46,7 @@ contract MorphoPoolAdapterForkTest is Test {
         });
         morpho.createMarket(mp);
 
-        adapter = new MorphoPoolAdapter(MORPHO, mp, IRM);
+        adapter = new MorphoPoolAdapter(safe, MORPHO, mp, IRM);
         vm.deal(address(adapter), 0); // fork-address inheritance guard
     }
 
@@ -130,5 +130,27 @@ contract MorphoPoolAdapterForkTest is Test {
         vm.prank(safe);
         adapter.withdraw(0.02 ether);
         assertEq(safe.balance - before, 0.02 ether, "exact exit after the lever released");
+    }
+
+    /// Incident #19 (red first): withdraw is vault-only — a stranger
+    /// must not settle the adapter's position to themselves.
+    function testForkWithdrawOnlyVault() public {
+        vm.deal(safe, 0.01 ether);
+        vm.prank(safe);
+        adapter.supply{value: 0.01 ether}();
+
+        address attacker = makeAddr("attacker");
+        vm.prank(attacker);
+        vm.expectRevert(MorphoPoolAdapter.NotVault.selector);
+        adapter.withdraw(0.01 ether);
+    }
+
+    /// Incident #19: supply is vault-only — foreign principal pollution.
+    function testForkSupplyOnlyVault() public {
+        address attacker = makeAddr("attacker");
+        vm.deal(attacker, 0.01 ether);
+        vm.prank(attacker);
+        vm.expectRevert(MorphoPoolAdapter.NotVault.selector);
+        adapter.supply{value: 0.01 ether}();
     }
 }

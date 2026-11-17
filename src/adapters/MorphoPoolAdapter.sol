@@ -82,12 +82,17 @@ interface IIrm {
 ///         repays before the rate drops, so a rate-driven exit always
 ///         finds liquidity). `principal` is the settlement basis; accrued
 ///         interest is swept by the owner hatch (only after a full recall).
+/// @dev Incident #19: supply/withdraw are vault-only — the money-holder
+///      checks the right itself (Uniswap v4 onlyPoolManager / Yearn
+///      onlyVault pattern; ToB: missing caller checks = failure #1).
 contract MorphoPoolAdapter is IPoolAdapter {
     uint256 private constant WAD = 1e18;
     uint256 private constant VIRTUAL_ASSETS = 1; // Morpho SharesMathLib
     uint256 private constant VIRTUAL_SHARES = 1e6;
     uint256 private constant SECONDS_PER_YEAR = 31_536_000;
 
+    /// @notice The only address allowed to supply/withdraw (the safe).
+    address public immutable assetVault;
     IMorpho public immutable morpho;
     address public immutable loanToken;
     address public immutable collateralToken;
@@ -105,9 +110,13 @@ contract MorphoPoolAdapter is IPoolAdapter {
     error SettleMismatch();
     error TransferFailed();
     error NotOwner();
+    error NotVault();
+    error ZeroAddress();
     error PrincipalOutstanding();
 
-    constructor(address morpho_, IMorpho.MarketParams memory marketParams_, address irm_) {
+    constructor(address assetVault_, address morpho_, IMorpho.MarketParams memory marketParams_, address irm_) {
+        if (assetVault_ == address(0)) revert ZeroAddress();
+        assetVault = assetVault_;
         morpho = IMorpho(morpho_);
         loanToken = marketParams_.loanToken;
         collateralToken = marketParams_.collateralToken;
@@ -129,7 +138,12 @@ contract MorphoPoolAdapter is IPoolAdapter {
         return IMorpho.MarketParams(loanToken, collateralToken, marketOracle, marketIrm, marketLltv);
     }
 
-    function supply() external payable override {
+    modifier onlyVault() {
+        if (msg.sender != assetVault) revert NotVault();
+        _;
+    }
+
+    function supply() external payable override onlyVault {
         weth.deposit{value: msg.value}();
         weth.approve(address(morpho), msg.value);
         (uint256 assetsOut,) = morpho.supply(_mp(), msg.value, 0, address(this), "");
@@ -137,7 +151,7 @@ contract MorphoPoolAdapter is IPoolAdapter {
         principal += msg.value;
     }
 
-    function withdraw(uint256 ethAmount) external override {
+    function withdraw(uint256 ethAmount) external override onlyVault {
         if (ethAmount > principal) revert AbovePrincipal();
         principal -= ethAmount;
         (uint256 assetsOut,) = morpho.withdraw(_mp(), ethAmount, 0, address(this), address(this));
