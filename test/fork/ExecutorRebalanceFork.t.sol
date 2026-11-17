@@ -7,7 +7,7 @@ import {MorphoPoolAdapter, IMorpho} from "../../src/adapters/MorphoPoolAdapter.s
 import {AavePoolAdapter} from "../../src/adapters/AavePoolAdapter.sol";
 import {AssetVault} from "../../src/AssetVault.sol";
 import {GasVault} from "../../src/GasVault.sol";
-import {Executor} from "../../src/Executor.sol";
+import {Executor, IExecutorVault} from "../../src/Executor.sol";
 import {IWETH9} from "../../src/adapters/AavePoolAdapter.sol";
 import {IPayable} from "reactive-lib-omni/interfaces/IPayable.sol";
 
@@ -57,7 +57,7 @@ contract ExecutorRebalanceForkTest is Test {
 
         vault = new AssetVault();
         battery = new GasVault();
-        executor = new Executor(brain, PROXY, vault, battery, cashier);
+        executor = new Executor(brain, PROXY, IExecutorVault(address(vault)), battery, cashier);
 
         aaveAdapter = new AavePoolAdapter(address(vault), AAVE_POOL, WETH);
         morphoAdapter = new MorphoPoolAdapter(address(vault), MORPHO, mp, IRM);
@@ -70,7 +70,6 @@ contract ExecutorRebalanceForkTest is Test {
         vault.authorizePoolAdapter(address(aaveAdapter));
         vault.authorizePoolAdapter(address(morphoAdapter));
         battery.authorizeExecutor(address(executor));
-        executor.setPools(address(aaveAdapter), address(morphoAdapter));
 
         vm.deal(user, 0.05 ether);
         vm.prank(user);

@@ -14,16 +14,25 @@ import {IPayable} from "reactive-lib-omni/interfaces/IPayable.sol";
 ///         the AssetVault, fuel through the GasVault — one battery for
 ///         every asset and chain. Per-chain instances on expansion
 ///         (same code, new deploy; ADR-EXPANSION §3).
-contract Executor is AbstractCallback {
-    /// @notice Партнёры сменяемы owner'ом ОДНИМ атомарным сеттером
-    ///         (ADR-EXPANSION: сейф и батарея переезжают только парой —
-    ///         рассинхрон адресатов исключён конструкцией). Гварды
-    ///         отправителей (мозг/кассир) — immutable намеренно.
-    IAssetVault public assetVault;
-    IGasVault public gasVault;
+/// @dev Срез сейфа для мульти-активного исполнителя: обе ветки (ETH
+///      AssetVault и Erc20AssetVault) удовлетворяют этому интерфейсу.
+interface IExecutorVault {
+    function rebalanceTarget() external view returns (uint256);
+    function deployToPool(address adapter, uint256 amount) external;
+    function recallFromPool(address adapter, uint256 amount) external;
+    function inPoolOf(address adapter) external view returns (uint256);
+    function poolAdapterCount() external view returns (uint256);
+    function poolAdapters(uint256 i) external view returns (address);
+}
 
-    address public poolA;
-    address public poolB;
+contract Executor is AbstractCallback {
+    /// @notice Партнёры сменяемы owner'ом; гварды отправителей
+    ///         (мозг/кассир) — immutable намеренно.
+    ///         v3: РЕЕСТР сейфов — конструкторский сейф первый в списке,
+    ///         addVault/removeVault управляют остальными (мульти-актив).
+    IExecutorVault[] public vaults;
+    mapping(address => bool) public isVault;
+    IGasVault public gasVault;
 
     /// @notice ETH tank: below the threshold → ExecutorLowEth event; the
     ///         cashier (Lasna) is subscribed and refills the tank by
@@ -38,7 +47,8 @@ contract Executor is AbstractCallback {
     uint256 public totalTankedEth;
 
     event Rebalanced(address indexed sender, uint256 originBlockNumber, uint256 amount);
-    event PoolsSet(address poolA, address poolB);
+    event VaultAdded(address indexed vault);
+    event VaultRemoved(address indexed vault);
     event EthTankRefueled(uint256 needWei, uint256 marginWei);
     event ExecutorLowEth(uint256 balance, uint256 threshold);
     event VaultsRewired(address indexed assetVault, address indexed gasVault);
@@ -79,31 +89,51 @@ contract Executor is AbstractCallback {
     constructor(
         address rulesEngine_,
         IPayable callbackProxy_,
-        IAssetVault assetVault_,
+        IExecutorVault assetVault_,
         IGasVault gasVault_,
         address gasPayerSender_
     ) AbstractCallback(callbackProxy_, rulesEngine_) {
         owner = msg.sender;
-        assetVault = assetVault_;
+        vaults.push(assetVault_);
+        isVault[address(assetVault_)] = true;
+        emit VaultAdded(address(assetVault_));
         gasVault = gasVault_;
         _GAS_PAYER_SENDER = gasPayerSender_;
         _original = address(this);
     }
 
-    function setPools(address poolA_, address poolB_) external onlyOwner noDelegateCall {
-        if (poolA_ == address(0) || poolB_ == address(0)) revert ZeroAddress();
-        poolA = poolA_;
-        poolB = poolB_;
-        emit PoolsSet(poolA_, poolB_);
+    function vaultCount() external view returns (uint256) {
+        return vaults.length;
     }
 
-    /// @notice Атомарная смена пары сейф+батарея — только вместе
-    ///         (zero-address запрещён; смена — событием).
-    function setVaults(IAssetVault assetVault_, IGasVault gasVault_) external onlyOwner noDelegateCall {
-        if (address(assetVault_) == address(0) || address(gasVault_) == address(0)) revert ZeroAddress();
-        assetVault = assetVault_;
+    /// @notice Мульти-актив: добавить сейф (со своими адаптерами пулов).
+    function addVault(IExecutorVault vault_) external onlyOwner noDelegateCall {
+        if (address(vault_) == address(0)) revert ZeroAddress();
+        if (isVault[address(vault_)]) revert ZeroAddress(); // уже есть
+        isVault[address(vault_)] = true;
+        vaults.push(vault_);
+        emit VaultAdded(address(vault_));
+    }
+
+    function removeVault(IExecutorVault vault_) external onlyOwner noDelegateCall {
+        if (!isVault[address(vault_)]) revert ZeroAddress();
+        isVault[address(vault_)] = false;
+        uint256 len = vaults.length;
+        for (uint256 i = 0; i < len; i++) {
+            if (address(vaults[i]) == address(vault_)) {
+                vaults[i] = vaults[len - 1];
+                vaults.pop();
+                break;
+            }
+        }
+        emit VaultRemoved(address(vault_));
+    }
+
+    /// @notice Смена батареи (газ — общий на цепь).
+    function setGasVault(IGasVault gasVault_) external onlyOwner noDelegateCall {
+        if (address(gasVault_) == address(0)) revert ZeroAddress();
         gasVault = gasVault_;
-        emit VaultsRewired(address(assetVault_), address(gasVault_));
+        emit VaultsRewired(address(0), address(gasVault_));
     }
 
     function setEthLowThreshold(uint256 threshold_) external onlyOwner noDelegateCall {
@@ -125,10 +155,7 @@ contract Executor is AbstractCallback {
         onlyServiceProvider
         onlyCallbackSender(sender_)
     {
-        uint256 moved;
-        if (poolA != address(0) && poolB != address(0)) {
-            moved = _placeCapital();
-        }
+        uint256 moved = _placeCapital();
         rebalanceCount += 1;
         emit Rebalanced(sender_, originBlockNumber_, moved);
         // Bootstrap-cry: an empty tank must be able to cry from the
@@ -138,21 +165,56 @@ contract Executor is AbstractCallback {
         _checkEth();
     }
 
+    /// @dev Мульти-актив: каждый сейф ребалансируется независимо —
+    ///      лучший/худший пул считается по ЕГО адаптерам.
     function _placeCapital() private returns (uint256 moved) {
-        uint256 rateA = IPoolAdapter(poolA).supplyRatePerYear();
-        uint256 rateB = IPoolAdapter(poolB).supplyRatePerYear();
-        (address best, address worst) = rateA >= rateB ? (poolA, poolB) : (poolB, poolA);
-        uint256 spread = rateA >= rateB ? rateA - rateB : rateB - rateA;
-
-        uint256 inWorst = assetVault.inPoolOf(worst);
-        if (inWorst > 0 && spread >= minSpreadWad) {
-            assetVault.recallFromPool(worst, inWorst);
-            moved = inWorst;
-        }
-        uint256 free = assetVault.rebalanceTarget();
-        if (free > 0) {
-            assetVault.deployToPool(best, free);
-            moved += free;
+        uint256 len = vaults.length;
+        for (uint256 v = 0; v < len; v++) {
+            IExecutorVault vault = vaults[v];
+            uint256 n = vault.poolAdapterCount();
+            if (n < 2) {
+                if (n == 1) {
+                    // единственный пул: просто размещаем свободное
+                    uint256 freeSolo = vault.rebalanceTarget();
+                    if (freeSolo > 0) {
+                        vault.deployToPool(vault.poolAdapters(0), freeSolo);
+                        moved += freeSolo;
+                    }
+                }
+                continue;
+            }
+            uint256 bestRate;
+            address best;
+            {
+                address first = vault.poolAdapters(0);
+                best = first;
+                bestRate = IPoolAdapter(first).supplyRatePerYear();
+            }
+            address worst = best;
+            uint256 worstRate = bestRate;
+            for (uint256 i = 1; i < n; i++) {
+                address a = vault.poolAdapters(i);
+                uint256 r = IPoolAdapter(a).supplyRatePerYear();
+                if (r > bestRate) { // ничья — остаётся ранний пул (tie→poolA)
+                    bestRate = r;
+                    best = a;
+                }
+                if (r < worstRate) {
+                    worstRate = r;
+                    worst = a;
+                }
+            }
+            uint256 spread = bestRate - worstRate;
+            uint256 inWorst = vault.inPoolOf(worst);
+            if (inWorst > 0 && spread >= minSpreadWad) {
+                vault.recallFromPool(worst, inWorst);
+                moved = inWorst;
+            }
+            uint256 free = vault.rebalanceTarget();
+            if (free > 0) {
+                vault.deployToPool(best, free);
+                moved += free;
+            }
         }
     }
 

@@ -4,7 +4,7 @@ pragma solidity ^0.8.29;
 import {Test} from "forge-std/Test.sol";
 import {AssetVault, IAssetVault} from "../src/AssetVault.sol";
 import {GasVault} from "../src/GasVault.sol";
-import {Executor} from "../src/Executor.sol";
+import {Executor, IExecutorVault} from "../src/Executor.sol";
 import {MockPool} from "./mocks/MockPool.sol";
 import {MockCallbackProxy} from "./mocks/MockCallbackProxy.sol";
 import {IPayable} from "reactive-lib-omni/interfaces/IPayable.sol";
@@ -29,7 +29,8 @@ contract ExecutorTest is Test {
         vm.startPrank(alice);
         vault = new AssetVault();
         battery = new GasVault();
-        executor = new Executor(rulesEngine, IPayable(payable(proxy)), vault, battery, gasPayer);
+        executor =
+            new Executor(rulesEngine, IPayable(payable(proxy)), IExecutorVault(address(vault)), battery, gasPayer);
         vault.setGasVault(battery);
         vault.authorizeExecutor(address(executor));
         battery.authorizeExecutor(address(executor));
@@ -141,7 +142,6 @@ contract ExecutorTest is Test {
         vm.startPrank(alice);
         vault.authorizePoolAdapter(address(a));
         vault.authorizePoolAdapter(address(b));
-        executor.setPools(address(a), address(b));
         vm.stopPrank();
     }
 
@@ -208,24 +208,66 @@ contract ExecutorTest is Test {
         c.callRefuel(address(executor), proxy, gasPayer);
     }
 
-    /// ADR-EXPANSION: пара сейф+батарея меняется атомарно одним сеттером.
-    function testSetVaultsAtomicPair() public {
+    /// v3: реестр сейфов — add/remove + батарея отдельно.
+    function testVaultRegistry() public {
         AssetVault newVault = new AssetVault();
         GasVault newBattery = new GasVault();
 
         vm.prank(makeAddr("nobody"));
         vm.expectRevert(Executor.NotOwner.selector);
-        executor.setVaults(newVault, newBattery);
+        executor.addVault(IExecutorVault(address(newVault)));
 
         vm.prank(alice);
-        vm.expectRevert(Executor.ZeroAddress.selector);
-        executor.setVaults(IAssetVault(address(0)), newBattery);
+        executor.addVault(IExecutorVault(address(newVault)));
+        assertEq(executor.vaultCount(), 2);
+        assertTrue(executor.isVault(address(newVault)));
 
+        // повторное добавление и удаление несуществующего — реверт
         vm.startPrank(alice);
-        executor.setVaults(newVault, newBattery);
+        vm.expectRevert(Executor.ZeroAddress.selector);
+        executor.addVault(IExecutorVault(address(newVault)));
+        vm.expectRevert(Executor.ZeroAddress.selector);
+        executor.removeVault(IExecutorVault(address(makeAddr("ghost"))));
+        executor.removeVault(IExecutorVault(address(newVault)));
         vm.stopPrank();
-        assertEq(address(executor.assetVault()), address(newVault));
+        assertEq(executor.vaultCount(), 1);
+        assertFalse(executor.isVault(address(newVault)));
+
+        vm.prank(alice);
+        executor.setGasVault(newBattery);
         assertEq(address(executor.gasVault()), address(newBattery));
+    }
+
+    /// Мульти-актив: оба сейфа ребалансируются одним тиком — каждый
+    /// по СВОИМ пулам (v3-сценарий ETH + USDC).
+    function testRebalanceCoversAllVaults() public {
+        (MockPool a, MockPool b) = _armedPools();
+        b.setRatePerYear(0.09e18);
+        vm.deal(address(executor), 0.1 ether);
+
+        AssetVault vault2 = new AssetVault();
+        vault2.authorizeExecutor(address(executor));
+        MockPool c = new MockPool(); // 7%
+        MockPool d = new MockPool(); // 3%
+        c.setRatePerYear(0.07e18);
+        d.setRatePerYear(0.03e18);
+        vault2.authorizePoolAdapter(address(c));
+        vault2.authorizePoolAdapter(address(d));
+        vm.prank(alice);
+        executor.addVault(IExecutorVault(address(vault2)));
+
+        vm.deal(alice, 2 ether);
+        vm.startPrank(alice);
+        vault.deposit{value: 1 ether}();
+        vault2.deposit{value: 1 ether}();
+        vm.stopPrank();
+
+        vm.prank(proxy);
+        executor.rebalance(rulesEngine, 1);
+
+        assertEq(vault.inPoolOf(address(b)), 1 ether, "vault1: best pool (b)");
+        assertEq(vault2.inPoolOf(address(c)), 1 ether, "vault2: best pool (c)");
+        assertEq(vault2.inPoolOf(address(d)), 0);
     }
 }
 
@@ -259,7 +301,9 @@ contract ExecutorDebtTest is Test {
         proxy = new MockCallbackProxy();
         AssetVault vault = new AssetVault();
         GasVault battery = new GasVault();
-        executor = new Executor(rulesEngine, IPayable(payable(address(proxy))), vault, battery, gasPayer);
+        executor = new Executor(
+            rulesEngine, IPayable(payable(address(proxy))), IExecutorVault(address(vault)), battery, gasPayer
+        );
         vault.authorizeExecutor(address(executor));
         battery.authorizeExecutor(address(executor));
     }

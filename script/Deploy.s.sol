@@ -4,7 +4,7 @@ pragma solidity ^0.8.29;
 import {Script} from "forge-std/Script.sol";
 import {AssetVault} from "../src/AssetVault.sol";
 import {GasVault} from "../src/GasVault.sol";
-import {Executor} from "../src/Executor.sol";
+import {Executor, IExecutorVault} from "../src/Executor.sol";
 import {IPayable} from "reactive-lib-omni/interfaces/IPayable.sol";
 
 /// @dev The Sepolia half of the stand (ADR-v2 + ADR-EXPANSION §2): the
@@ -19,7 +19,9 @@ contract Deploy is Script {
         vm.startBroadcast();
         vault = new AssetVault();
         battery = new GasVault();
-        executor = new Executor(rulesEngine_, IPayable(payable(callbackProxy_)), vault, battery, gasPayer_);
+        executor = new Executor(
+            rulesEngine_, IPayable(payable(callbackProxy_)), IExecutorVault(address(vault)), battery, gasPayer_
+        );
         vm.stopBroadcast();
     }
 }

@@ -154,6 +154,12 @@ contract AssetVault is IAssetVault {
         inPoolOf[adapter_] -= amount_;
     }
 
+    /// @notice Количество авторизованных адаптеров (мульти-активный
+    ///         исполнитель читает реестр сейфа).
+    function poolAdapterCount() external view returns (uint256) {
+        return poolAdapters.length;
+    }
+
     /// @notice Σ inPoolOf across authorized adapters.
     function totalInPools() public view returns (uint256 total) {
         uint256 len = poolAdapters.length;
