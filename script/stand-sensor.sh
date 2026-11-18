@@ -86,6 +86,6 @@ note "buyer: buysCount=$(cast call "$BUYER" 'buysCount()(uint256)' --rpc-url "$R
 # --- кошельки оператора ---
 note "A@Lasna: $(cast from-wei "$(cast balance 0xF696ae41aAb9A8979F18086d70d5e6A9Bf9FF53a --rpc-url "$RPC_L" 2>/dev/null || echo 0)") lREACT / A@Sepolia: $(cast from-wei "$(cast balance 0xF696ae41aAb9A8979F18086d70d5e6A9Bf9FF53a --rpc-url "$RPC_S" 2>/dev/null || echo 0)") ETH"
 
-note "=== ${RED:+RED — см. RED-строки выше}${RED:-GREEN} ==="
+if [ "$RED" -eq 0 ]; then note "=== GREEN ==="; else note "=== RED — см. RED-строки выше ==="; fi
 cat "$REPORT"
 exit "$RED"
