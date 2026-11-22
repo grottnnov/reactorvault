@@ -271,4 +271,18 @@ contract GasPayerParamsTest is Test {
         vm.expectRevert(GasPayer.BadParams.selector);
         gp.setOwnTank(0.3 ether, 0.1 ether); // target ≤ floor is denied
     }
+
+    /// Thresholds are money: retunes are announced on-chain.
+    function test_TuningSettersEmit() public {
+        GasPayer emitter = new GasPayer(11155111, makeAddr("e"), makeAddr("v"), 1, 2);
+        vm.startPrank(emitter.owner());
+        vm.expectEmit(true, true, true, true, address(emitter));
+        emit GasPayer.TariffSet(150, 0.1 ether, 0.002 ether, 1 hours);
+        emitter.setTariff(150, 0.1 ether, 0.002 ether, 1 hours);
+
+        vm.expectEmit(true, true, true, true, address(emitter));
+        emit GasPayer.OwnTankSet(0.2 ether, 0.5 ether);
+        emitter.setOwnTank(0.2 ether, 0.5 ether);
+        vm.stopPrank();
+    }
 }

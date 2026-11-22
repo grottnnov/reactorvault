@@ -116,12 +116,17 @@ contract GasPayer is AbstractReactive {
         SYSTEM.subscribe(destChainId, executor, ethLowTopic, REACTIVE_IGNORE, REACTIVE_IGNORE, REACTIVE_IGNORE);
     }
 
+    /// @notice Thresholds are money: every retune is announced on-chain.
+    event TariffSet(uint256 marginNum, uint256 capWei, uint256 minWei, uint64 cooldown);
+    event OwnTankSet(uint256 floorWei, uint256 targetWei);
+
     function setTariff(uint256 marginNum_, uint256 capWei_, uint256 minWei_, uint64 cooldown_) external onlyOwner {
         if (marginNum_ < 100) revert BadParams();
         marginNum = marginNum_;
         refillCapWei = capWei_;
         minRefillWei = minWei_;
         cycleCooldown = cooldown_;
+        emit TariffSet(marginNum_, capWei_, minWei_, cooldown_);
     }
 
     function setOwnTank(uint256 floorWei_, uint256 targetWei_) external onlyOwner {
@@ -129,6 +134,7 @@ contract GasPayer is AbstractReactive {
         ownFloorWei = floorWei_;
         ownTargetWei = targetWei_;
         ownAlertArmed = true;
+        emit OwnTankSet(floorWei_, targetWei_);
     }
 
     function react(LogRecord calldata log_) external override onlySystem {

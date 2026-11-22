@@ -267,9 +267,13 @@ contract FuelConverter is AbstractReactive {
         SYSTEM.subscribe(SRC_CHAIN_ID, fund, fundedTopic, REACTIVE_IGNORE, REACTIVE_IGNORE, REACTIVE_IGNORE);
     }
 
+    /// @notice Thresholds are money: every retune is announced on-chain.
+    event TriggerSet(uint8 level, uint64 cooldown);
+
     function setTrigger(uint8 level_, uint64 cooldown_) external onlyOwner {
         triggerLevel = level_;
         cooldown = cooldown_;
+        emit TriggerSet(level_, cooldown_);
     }
 
     /// @notice Reactivation of orders after a BadRate stop: owner only,

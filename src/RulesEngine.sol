@@ -127,9 +127,12 @@ contract RulesEngine is AbstractReactive {
     }
 
     /// @notice The executor registry: destination chain → the instance on it.
+    event ExecutorSet(uint256 indexed destChainId, address executor);
+
     function setExecutor(uint256 destChainId_, address executor_) external onlyOwner noDelegateCall {
         if (executor_ == address(0)) revert ZeroAddress();
         executors[destChainId_] = executor_;
+        emit ExecutorSet(destChainId_, executor_);
     }
 
     /// @notice Point the network at an emitter of an already-set rule.

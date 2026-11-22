@@ -261,5 +261,13 @@ contract RulesEngineTest is Test {
         assertEq(engine.firedCount(), 0);
     }
 
+    /// The executor registry retune is announced on-chain.
+    function test_SetExecutorEmits() public {
+        address e2 = makeAddr("executor2");
+        vm.expectEmit(true, true, true, true, address(engine));
+        emit RulesEngine.ExecutorSet(DEST_CHAIN, e2);
+        engine.setExecutor(DEST_CHAIN, e2);
+    }
+
     event RuleFired(uint256 indexed topic0, uint256 originChainId, uint256 originBlockNumber);
 }

@@ -136,12 +136,18 @@ contract Executor is AbstractCallback {
         emit VaultsRewired(address(0), address(gasVault_));
     }
 
+    /// @notice Thresholds are money: every retune is announced on-chain.
+    event EthLowThresholdSet(uint256 threshold);
+    event MinSpreadSet(uint256 minSpreadWad);
+
     function setEthLowThreshold(uint256 threshold_) external onlyOwner noDelegateCall {
         ethLowThreshold = threshold_;
+        emit EthLowThresholdSet(threshold_);
     }
 
     function setMinSpread(uint256 minSpreadWad_) external onlyOwner noDelegateCall {
         minSpreadWad = minSpreadWad_;
+        emit MinSpreadSet(minSpreadWad_);
     }
 
     /// @notice Rebalance: local decision at execution time. Rates are
@@ -152,6 +158,7 @@ contract Executor is AbstractCallback {
     ///         (recall → deploy); the executor never holds it.
     function rebalance(address sender_, uint256 originBlockNumber_)
         external
+        noDelegateCall
         onlyServiceProvider
         onlyCallbackSender(sender_)
     {

@@ -446,6 +446,13 @@ contract FuelConverterTest is Test {
         _funded(FAUCET_RVM, 1.0 ether, 100);
         assertFalse(converter.rateStopped(), "exactly the minimum is acceptable");
     }
+
+    /// Thresholds are money: the trigger retune is announced on-chain.
+    function test_SetTriggerEmits() public {
+        vm.expectEmit(true, true, true, true, address(converter));
+        emit FuelConverter.TriggerSet(2, 6 hours);
+        converter.setTrigger(2, 6 hours);
+    }
 }
 
 /// @dev Incident #15 class (morning check 13.11): the buyer is a callback

@@ -325,4 +325,34 @@ contract ExecutorDebtTest is Test {
         assertEq(proxy.debt(address(executor)), 0, "debt cleared - deliveries resume");
         assertEq(address(executor).balance, 0.005 ether - 82_000_000_000 wei);
     }
+
+    /// Thresholds are money: retunes are announced on-chain.
+    function test_ThresholdSettersEmit() public {
+        vm.expectEmit(true, true, true, true, address(executor));
+        emit Executor.EthLowThresholdSet(0.01 ether);
+        executor.setEthLowThreshold(0.01 ether);
+
+        vm.expectEmit(true, true, true, true, address(executor));
+        emit Executor.MinSpreadSet(0.005e18);
+        executor.setMinSpread(0.005e18);
+    }
+
+    /// P10: the money path rejects a delegatecall into a foreign context
+    ///      (the guard runs before the sender checks, so no proxy setup needed).
+    function test_RevertWhen_RebalanceDelegateCall() public {
+        DelegateRelay relay = new DelegateRelay();
+        vm.expectRevert(abi.encodeWithSelector(Executor.DelegateCallNotAllowed.selector));
+        relay.call(address(executor), abi.encodeWithSignature("rebalance(address,uint256)", address(0), 0));
+    }
+}
+
+contract DelegateRelay {
+    function call(address target, bytes memory data) external {
+        (bool ok, bytes memory ret) = target.delegatecall(data);
+        if (!ok) {
+            assembly {
+                revert(add(ret, 32), mload(ret))
+            }
+        }
+    }
 }

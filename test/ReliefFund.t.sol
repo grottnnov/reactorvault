@@ -446,6 +446,36 @@ contract ReliefFundTest is Test {
         vm.prank(systemAddr);
         fund.onWardHungry(newWatcherRvm, wardP);
     }
+
+    /// Thresholds are money: policy retunes are announced on-chain.
+    function test_PolicySettersEmit() public {
+        address w = makeAddr("policyWard");
+        fund.addWard(w, 0.05 ether, 0.1 ether);
+
+        vm.expectEmit(true, true, true, true, address(fund));
+        emit ReliefFund.WardPolicySet(w, 0.06 ether, 0.12 ether);
+        fund.setWard(w, 0.06 ether, 0.12 ether);
+
+        vm.expectEmit(true, true, true, true, address(fund));
+        emit ReliefFund.FeedingSet(0.2 ether, 0.07 ether);
+        fund.setFeeding(0.2 ether, 0.07 ether);
+
+        vm.expectEmit(true, true, true, true, address(fund));
+        emit ReliefFund.ReservePolicySet(0.4 ether, 1.5 ether);
+        fund.setReservePolicy(0.4 ether, 1.5 ether);
+
+        vm.expectEmit(true, true, true, true, address(fund));
+        emit ReliefFund.WatcherPolicySet(2.5 ether, 1.2 ether, 7 ether);
+        fund.setWatcherPolicy(2.5 ether, 1.2 ether, 7 ether);
+
+        vm.expectEmit(true, true, true, true, address(fund));
+        emit ReliefFund.BurnRateSet(0.15 ether);
+        fund.setBurnRate(0.15 ether);
+
+        vm.expectEmit(true, true, true, true, address(fund));
+        emit ReliefFund.MinReserveSet(2 ether);
+        fund.setMinReserve(2 ether);
+    }
 }
 
 /// @dev v6 (ADR-v2): the ward registry, the onWardHungry fast chain, the

@@ -143,6 +143,14 @@ contract ReliefFund {
         emit WardRemoved(target_);
     }
 
+    /// @notice Thresholds are money: every retune is announced on-chain.
+    event WardPolicySet(address indexed ward, uint256 floor, uint256 portion);
+    event FeedingSet(uint256 dogFloor, uint256 ration);
+    event ReservePolicySet(uint256 floor, uint256 target);
+    event WatcherPolicySet(uint256 floor, uint256 topUp, uint256 sweepAbove);
+    event BurnRateSet(uint256 perDay);
+    event MinReserveSet(uint256 minReserve);
+
     function setWard(address target_, uint256 floor_, uint256 portion_) external {
         require(msg.sender == owner, "owner only");
         require(
@@ -151,6 +159,7 @@ contract ReliefFund {
         );
         wards[target_].floor = floor_;
         wards[target_].portion = portion_;
+        emit WardPolicySet(target_, floor_, portion_);
     }
 
     // ---------------------------------------------------------- feeding
@@ -373,6 +382,7 @@ contract ReliefFund {
     function setBurnRate(uint256 perDay_) external {
         require(msg.sender == owner, "owner only");
         burnRatePerDay = perDay_;
+        emit BurnRateSet(perDay_);
     }
 
     // ------------------------------------------------------------------ owner
@@ -380,6 +390,7 @@ contract ReliefFund {
     function setMinReserve(uint256 minReserve_) external {
         require(msg.sender == owner, "owner only");
         minReserve = minReserve_;
+        emit MinReserveSet(minReserve_);
     }
 
     function setDogContract(address dogContract_) external {
@@ -425,12 +436,14 @@ contract ReliefFund {
         require(msg.sender == owner, "owner only");
         dogFloor = dogFloor_;
         ration = ration_;
+        emit FeedingSet(dogFloor_, ration_);
     }
 
     function setReservePolicy(uint256 floor_, uint256 target_) external {
         require(msg.sender == owner, "owner only");
         reserveFloor = floor_;
         reserveTarget = target_;
+        emit ReservePolicySet(floor_, target_);
     }
 
     function setWatcherPolicy(uint256 floor_, uint256 topUp_, uint256 sweepAbove_) external {
@@ -438,6 +451,7 @@ contract ReliefFund {
         watcherFloor = floor_;
         watcherTopUp = topUp_;
         watcherSweepAbove = sweepAbove_;
+        emit WatcherPolicySet(floor_, topUp_, sweepAbove_);
     }
 
     /// @notice Conservating/moving leftovers (stand migrations).
