@@ -95,7 +95,7 @@ echo "  ✅ executor = $EXEC22"
 echo "== [3] Lasna: мозг → кассир → склад (строго подряд; nonce не трогать)"
 mustBe "$(dep "$RPC_LASNA" RulesEngine)" "$RULES22" "brain"
 mustBe "$(dep "$RPC_LASNA" GasPayer "$EXEC22 $GASVAULT $T_ETH_LOW $T_RESERVE")" "$GAS22" "cashier"
-mustBe "$(depW "Fund.sol:ReliefFund" "$A $OMNI 0x0000000000000000000000000000000000000000 $OMNI $DOG $FUND22 $FUND22")" "$FUND22" "depot (latch-fixed)"
+mustBe "$(depW "ReliefFund.sol:ReliefFund" "$A $OMNI 0x0000000000000000000000000000000000000000 $OMNI $DOG $FUND22 $FUND22")" "$FUND22" "depot (latch-fixed)"
 
 echo "== [4] позитив-сверки (геттеры, не строки деплоя)"
 echo "  morpho market.lastUpdate (ожидаю >0):"

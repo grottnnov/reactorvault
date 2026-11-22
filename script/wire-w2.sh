@@ -2,8 +2,8 @@
 # wire-w2.sh — bring the W2 stand to life: subscriptions, the depot's
 # ward registry, tanks (depositTo on SYSTEM — NOT a plain transfer:
 # only depositTo clears the debt, the 08.11 probe lesson), vault
-# pockets. Run after deploy-w2.sh and the depot/watchdog deploy
-# deploy-w2-fund.sh (addresses live in reactorvault/.env).
+# pockets. Run after deploy-w2.sh AND deploy-w21-fund.sh
+# (addresses live in reactorvault/.env).
 #
 # Stand decisions (ADR-v2 + W2 calibration):
 #   - the brain listens to the vault's Deposited (rare, live, cheap:
@@ -28,7 +28,7 @@ RPC_LASNA=${LASNA_RPC:-https://lasna-rpc.rnk.dev}
 RPC_SEP=${SEPOLIA_RPC:-https://ethereum-sepolia-rpc.publicnode.com}
 OMNI=0x8888888888888888888888888888888888888888
 set -a; source .env; set +a
-PK=$LASNA_PARITY_A_PRIVATE_KEY
+PK=${LASNA_PARITY_A_PRIVATE_KEY:?set LASNA_PARITY_A_PRIVATE_KEY (from ~/.secrets)}
 
 T_DEPOSITED=$(cast keccak 'Deposited(address,uint256,uint256)')
 
@@ -78,4 +78,4 @@ for X in "brain     $W2_RULES" "cashier   $W2_GASPAYER" "converter $W2_CONVERTER
 done
 echo "  asset vault $W2_ASSETVAULT (Sepolia), battery $W2_GASVAULT, executor $W2_EXECUTOR, buyer $W2_BUYER"
 echo "  depot: ward records = $(cast call "$W2_FUND" 'wardCount()(uint256)' --rpc-url "$RPC_LASNA" 2>/dev/null)"
-echo "next: a live auto-faucet probe + the end-to-end demo (see HANDOFF/evidence)"
+echo "next: a live auto-faucet probe + the end-to-end demo"

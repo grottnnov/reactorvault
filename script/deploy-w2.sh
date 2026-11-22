@@ -3,8 +3,8 @@
 #
 # What it does: precompute the circular dependencies → the Sepolia trio
 # (vault, executor, fuel buyer) → the Lasna trio (brain, cashier,
-# converter). The depot (Fund v6) and the watchdog (Watchdog v6) are
-# deployed RIGHT AFTER this by the depot/watchdog deploy script
+# converter). The depot (ReliefFund v6) and the watchdog (Watchdog v6) are
+# deployed RIGHT AFTER this by script/deploy-w21-fund.sh
 # — their future addresses are already baked in here by precompute
 # (nonces N+3, N+4); wiring is wire-w2.sh.
 #
@@ -89,7 +89,7 @@ mustBe "$(dep "$RPC_LASNA" RulesEngine)" "$RULES" "brain"
 mustBe "$(dep "$RPC_LASNA" GasPayer "$EXEC $GASV $T_ETH_LOW $T_RESERVE")" "$GAS" "cashier"
 mustBe "$(dep "$RPC_LASNA" FuelConverter:FuelConverter "$FUND $BUYER $T_HORIZON")" "$CONV" "converter"
 
-echo "== [4] into .env (W2_*), next step: the depot/watchdog deploy script (expects nonce $((N+3)))"
+echo "== [4] into .env (W2_*), next step: script/deploy-w21-fund.sh (expects nonce $((N+3)))"
 upsert() { if grep -q "^$1=" .env 2>/dev/null; then sed -i "s|^$1=.*|$1=$2|" .env; else printf '%s=%s\n' "$1" "$2" >> .env; fi; }
 upsert W2_RULES "$RULES"; upsert W2_GASPAYER "$GAS"; upsert W2_CONVERTER "$CONV"
 upsert W2_FUND "$FUND";   upsert W2_DOG "$DOG"

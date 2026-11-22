@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # deploy-w21-fund.sh — передеплой надзорной обвязки (ADR-EXPANSION):
 # склад(Fund v6, конструктор 7 аргументов) → сторож(v6, ПРАВИЛЬНЫЙ ПУТЬ
-# src/v6/Watchdog.sol — баг 09.11: деплойнулся корневой legacy-сторож
+# src/Watchdog.sol — баг 09.11: деплойнулся корневой legacy-сторож
 # с гвардом "VM only", ревертящий все омни-доставки) → конвертер →
 # покупщик. У всех — партнёрские люки (сеттеры).
 #
@@ -60,9 +60,9 @@ echo "  ✅ buyer = $BUYER21"
 
 echo "== [2] Lasna: склад → сторож(v6, правильный путь) → конвертер"
 # Fund v6 (ADR-EXPANSION: 7 аргументов — dogRvm упразднён, гвард по dogContract)
-F=$(depW "Fund.sol:ReliefFund" "$A $OMNI 0x0000000000000000000000000000000000000000 $OMNI $DOG21 $FUND21 $FUND21")
+F=$(depW "ReliefFund.sol:ReliefFund" "$A $OMNI 0x0000000000000000000000000000000000000000 $OMNI $DOG21 $FUND21 $FUND21")
 mustBe "$F" "$FUND21" "fund"
-D=$(depW "v6/Watchdog.sol:Watchdog" "$CHAIN $WATCHER_SILENCE_WINDOW $FUND21 $FUND21 $FUND21 $T_CRON10000 $T_BLACKLIST $T_MAILBOX_ALERT $T_DOG_FED $T_WATCHER_LOW $T_LOW_FUND")
+D=$(depW "Watchdog.sol:Watchdog" "$CHAIN $WATCHER_SILENCE_WINDOW $FUND21 $FUND21 $FUND21 $T_CRON10000 $T_BLACKLIST $T_MAILBOX_ALERT $T_DOG_FED $T_WATCHER_LOW $T_LOW_FUND")
 mustBe "$D" "$DOG21" "dog (v6 path)"
 
 echo "== [3] позитив-сверки (урок 09.11: в байт-коде должен быть ОЖИДАЕМЫЙ контракт)"

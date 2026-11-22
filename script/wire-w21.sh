@@ -8,7 +8,7 @@ export PATH="$PATH:${HOME:-/root}/.foundry/bin"
 cd "$(dirname "$0")/.."
 
 set -a; source .env; set +a
-PK=$DEPLOYER_PRIVATE_KEY
+PK=${DEPLOYER_PRIVATE_KEY:?set DEPLOYER_PRIVATE_KEY (from ~/.secrets)}
 
 RPC_LASNA=${LASNA_RPC:-https://lasna-rpc.rnk.dev}
 RPC_SEP=${SEPOLIA_RPC:-https://ethereum-sepolia-rpc.publicnode.com}
