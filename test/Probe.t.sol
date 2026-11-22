@@ -2,8 +2,8 @@
 pragma solidity ^0.8.29;
 
 import {Test} from "forge-std/Test.sol";
-import {CallbackProbe} from "../src/probe/CallbackProbe.sol";
-import {CallbackProbeReceiver} from "../src/probe/CallbackProbeReceiver.sol";
+import {CallbackProbe} from "../test/probe/CallbackProbe.sol";
+import {CallbackProbeReceiver} from "../test/probe/CallbackProbeReceiver.sol";
 import {OmniMockSystem} from "./mocks/OmniMockSystem.sol";
 import {IReactive} from "reactive-lib-omni/interfaces/IReactive.sol";
 import {AbstractCallback} from "reactive-lib-omni/base/AbstractCallback.sol";

@@ -2,6 +2,9 @@
 pragma solidity ^0.8.29;
 
 /// @dev A minimal Morpho Blue slice (as in MorphoPoolAdapter, repo canon).
+///      Kept separate from IMorpho on purpose: the USDC adapters carry
+///      their own ABI generation (see IAavePoolUsdc) — one interface per
+///      vendor ABI version, a deliberate drift guard, not duplication.
 interface IMorphoUsdc {
     struct MarketParams {
         address loanToken;
@@ -80,6 +83,8 @@ contract MorphoUsdcAdapter {
 
     error AbovePrincipal();
     error SettleMismatch();
+    error SettleTokenNotIn();
+    error SettleSendFailed();
     error NotVault();
 
     constructor(
@@ -138,10 +143,10 @@ contract MorphoUsdcAdapter {
             (assetsOut,) = morpho.withdraw(marketParams(), amount, 0, address(this), address(this));
             principal -= amount;
         }
-        require(IERC20M(loanToken).balanceOf(address(this)) >= assetsOut, "settle: token not in");
+        if (IERC20M(loanToken).balanceOf(address(this)) < assetsOut) revert SettleTokenNotIn();
         (bool ok, bytes memory ret) =
             address(loanToken).call(abi.encodeWithSignature("transfer(address,uint256)", assetVault, assetsOut));
-        require(ok && (ret.length == 0 || abi.decode(ret, (bool))), "settle: send failed");
+        if (!ok || (ret.length != 0 && !abi.decode(ret, (bool)))) revert SettleSendFailed();
         return true;
     }
 

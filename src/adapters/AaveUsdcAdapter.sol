@@ -3,6 +3,11 @@ pragma solidity ^0.8.29;
 
 /// @dev A minimal Aave v3 Pool slice for USDC supply (repo canon:
 ///      self-sufficient interfaces, no external dependencies).
+///      Deliberately separate from IAavePool (AavePoolAdapter.sol): the
+///      USDC path targets the v3.2 mainnet ABI where ReserveData fields
+///      sit in a different order than in the older Sepolia pool — merging
+///      the two would silently misdecode (the ABI-mismatch lesson, 17.11).
+///      Two vendor ABI generations = two interfaces, a deliberate drift guard.
 interface IAavePoolUsdc {
     struct ReserveData {
         uint256 configuration;
@@ -49,6 +54,7 @@ contract AaveUsdcAdapter {
 
     error AbovePrincipal();
     error SettleMismatch();
+    error SettleSendFailed();
     error NotOwner();
     error NotVault();
 
@@ -78,7 +84,7 @@ contract AaveUsdcAdapter {
         principal -= take;
         uint256 got = aavePool.withdraw(address(usdc), take, address(this));
         if (got != take) revert SettleMismatch();
-        require(_send(assetVault, take), "settle: send failed");
+        if (!_send(assetVault, take)) revert SettleSendFailed();
         return true;
     }
 

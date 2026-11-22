@@ -26,8 +26,8 @@ PROBE_TANK=${PROBE_TANK:-0.1ether}
 : "${PROBE_DEPLOYER_PK:?PROBE_DEPLOYER_PK is required}"
 PK=$PROBE_DEPLOYER_PK
 # Probe source is parameterizable (the 12.11 gas-limit differential probe
-# reuses this script with PROBE_SRC=src/probe/CallbackProbe12.sol:CallbackProbe12)
-PROBE_SRC=${PROBE_SRC:-src/probe/CallbackProbe.sol:CallbackProbe}
+# reuses this script with PROBE_SRC=test/probe/CallbackProbe12.sol:CallbackProbe12)
+PROBE_SRC=${PROBE_SRC:-test/probe/CallbackProbe.sol:CallbackProbe}
 
 sendL() { cast send "$@" --rpc-url "$LASNA_RPC" --private-key "$PK" --json 2>/dev/null | python3 -c "import json,sys; r=json.load(sys.stdin); print('  tx', r['transactionHash'], r['status'])"; }
 sendS() { cast send "$@" --rpc-url "$SEPOLIA_RPC" --private-key "$PK" --json 2>/dev/null | python3 -c "import json,sys; r=json.load(sys.stdin); print('  tx', r['transactionHash'], r['status'])"; }
@@ -73,7 +73,7 @@ echo "== [2b/6] reactive tank: depositTo(PROBE) $PROBE_TANK (a tick's debt ≈ 0
 sendL 0x8888888888888888888888888888888888888888 'depositTo(address)' "$PROBE" --value "$PROBE_TANK"
 
 echo "== [3/6] CallbackProbeReceiver on Sepolia (proxy=0xAa14…3b4, sender=probe)"
-RECEIVER=$(deployTo src/probe/CallbackProbeReceiver.sol:CallbackProbeReceiver "$SEPOLIA_RPC" "$PROXY" "$PROBE")
+RECEIVER=$(deployTo test/probe/CallbackProbeReceiver.sol:CallbackProbeReceiver "$SEPOLIA_RPC" "$PROXY" "$PROBE")
 echo "  RECEIVER=$RECEIVER"
 [ -n "$RECEIVER" ] && mustCode "$RECEIVER" receiver "$SEPOLIA_RPC" || { echo "receiver deploy failed"; exit 1; }
 
