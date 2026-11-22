@@ -10,7 +10,7 @@
 # Sepolia).
 #
 # Gas: NO cap (the 2.5M OOG lesson). Environment: DEPLOYER_PRIVATE_KEY.
-set -uo pipefail
+set -euo pipefail
 export PATH="$PATH:${HOME:-/root}/.foundry/bin"
 cd "$(dirname "$0")/.."
 

@@ -6,7 +6,7 @@
 # Preconditions: PROBE_DEPLOYER_PK (a single EOA: lREACT on Lasna,
 # ETH on Sepolia); topics/proxy live-verified 06.11. Deployment gas:
 # forge create with NO cap.
-set -uo pipefail
+set -euo pipefail
 export PATH="$PATH:${HOME:-/root}/.foundry/bin"
 cd "$(dirname "$0")/.."
 

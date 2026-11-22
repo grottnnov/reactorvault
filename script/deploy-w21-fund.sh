@@ -11,7 +11,7 @@
 #
 # Gas: NO cap (the OOG lesson). Environment: DEPLOYER_PRIVATE_KEY,
 # .env (the W2_RULES/W2_GASPAYER family addresses).
-set -uo pipefail
+set -euo pipefail
 export PATH="$PATH:${HOME:-/root}/.foundry/bin"
 cd "$(dirname "$0")/.."
 

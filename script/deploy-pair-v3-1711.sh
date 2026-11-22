@@ -40,7 +40,7 @@
 #
 # Environment: DEPLOYER_PRIVATE_KEY, .env (W2_FUND, W2_CONVERTER,
 # W2_BUYER).
-set -uo pipefail
+set -euo pipefail
 export PATH="$PATH:${HOME:-/root}/.foundry/bin"
 cd "$(dirname "$0")/.."
 

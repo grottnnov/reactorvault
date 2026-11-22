@@ -19,7 +19,7 @@
 #     converter's setFund moves the HorizonAlert subscription itself).
 #
 # Environment: DEPLOYER_PRIVATE_KEY, .env (new addresses from deploy-w22.sh).
-set -uo pipefail
+set -euo pipefail
 export PATH="$PATH:${HOME:-/root}/.foundry/bin"
 cd "$(dirname "$0")/.."
 

@@ -24,7 +24,7 @@
 #
 # Gas: NO cap (the OOG lesson). Positive checks after each step.
 # Environment: DEPLOYER_PRIVATE_KEY, .env (DOG/GASVAULT addresses — live).
-set -uo pipefail
+set -euo pipefail
 export PATH="$PATH:${HOME:-/root}/.foundry/bin"
 cd "$(dirname "$0")/.."
 

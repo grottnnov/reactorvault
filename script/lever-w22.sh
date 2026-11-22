@@ -9,7 +9,7 @@
 # Amounts are env-tunable: with ETH ≥ ~0.025 the defaults suffice; if
 # short, the script refuses BEFORE spending nonces. Environment:
 # DEPLOYER_PRIVATE_KEY, .env.
-set -uo pipefail
+set -euo pipefail
 export PATH="$PATH:${HOME:-/root}/.foundry/bin"
 cd "$(dirname "$0")/.."
 

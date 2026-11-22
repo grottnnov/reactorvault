@@ -21,7 +21,7 @@
 #
 # Environment: DEPLOYER_PRIVATE_KEY (an EOA funded on both chains; the
 # secrets canon — the key lives in your secret store, env is transport).
-set -uo pipefail
+set -euo pipefail
 export PATH="$PATH:${HOME:-/root}/.foundry/bin"
 cd "$(dirname "$0")/.."
 

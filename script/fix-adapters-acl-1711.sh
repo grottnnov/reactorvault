@@ -32,7 +32,7 @@
 #
 # Environment: DEPLOYER_PRIVATE_KEY, .env (W2_ASSETVAULT, W2_EXECUTOR,
 # W2_AAVE_ADAPTER, W2_MORPHO_ADAPTER, W2_ORACLE).
-set -uo pipefail
+set -euo pipefail
 export PATH="$PATH:${HOME:-/root}/.foundry/bin"
 cd "$(dirname "$0")/.."
 

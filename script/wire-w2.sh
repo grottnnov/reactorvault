@@ -20,7 +20,7 @@
 #     measured ~0.017/tick);
 #   - depot burnRate = 0 until a live burn measurement (horizon and
 #     the auto-faucet get enabled deliberately after calibration).
-set -uo pipefail
+set -euo pipefail
 export PATH="$PATH:${HOME:-/root}/.foundry/bin"
 cd "$(dirname "$0")/.."
 
