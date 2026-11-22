@@ -298,8 +298,8 @@ contract Erc20AssetVault {
         uint256 amount = token.balanceOf(address(this));
         totalDeposited = 0;
         treasuryTaken = 0;
+        emit Withdrawn(owner, amount); // P9: the event precedes the external call
         _safeTransfer(owner, amount);
-        emit Withdrawn(owner, amount);
     }
 
     function _recall(address adapter_, uint256 amount_) private {

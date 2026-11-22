@@ -147,6 +147,67 @@ contract GasVaultTest is Test {
         assertEq(battery.gasReserve(), 0);
         assertEq(battery.treasury(), 0);
     }
+
+    /// P9 order regression: the withdrawal event is emitted before the
+    /// transfer, after the pocket events — the log sequence is part of
+    /// the contract's observable behavior.
+    function testWithdrawAllEventOrder() public {
+        _fuel(0.4 ether);
+        vm.deal(address(this), 0.1 ether);
+        battery.treasuryIn{value: 0.1 ether}();
+
+        vm.prank(alice);
+        vm.expectEmit(true, true, true, true, address(battery));
+        emit GasVault.GasReserveUpdated(0);
+        vm.expectEmit(true, true, true, true, address(battery));
+        emit GasVault.TreasuryUpdated(0);
+        vm.expectEmit(true, true, true, true, address(battery));
+        emit GasVault.Withdrawn(alice, 0.5 ether);
+        battery.withdrawAll();
+    }
+}
+
+/// @dev P9: state and events settle BEFORE the external transfer — a
+///      reentrant owner receiver cannot observe a half-settled vault
+///      (the nested sweep sees zeros and pays out nothing twice).
+contract ReentrantSweepOwner {
+    GasVault public battery;
+    bool public reentered;
+
+    constructor() payable {
+        battery = new GasVault();
+        battery.depositFuel{value: 0.5 ether}();
+        battery.treasuryIn{value: 0.1 ether}();
+    }
+
+    function sweep() external {
+        battery.withdrawAll();
+    }
+
+    receive() external payable {
+        if (!reentered) {
+            reentered = true;
+            battery.withdrawAll(); // the reentrant second sweep must see zeros
+        }
+    }
+}
+
+contract GasVaultReentrantTest is Test {
+    /// The nested sweep inside receive() sees a fully settled vault
+    /// (reserve 0, treasury 0, balance 0) — nothing is paid twice and
+    /// nothing reverts. State settles before the external call (P9).
+    function testWithdrawAllReentrantOwnerSafe() public {
+        ReentrantSweepOwner owner = new ReentrantSweepOwner{value: 1 ether}();
+        GasVault battery = owner.battery();
+
+        owner.sweep();
+
+        assertTrue(owner.reentered(), "the nested sweep did run");
+        assertEq(address(owner).balance, 1 ether, "0.4 constructor rest + 0.6 paid exactly once");
+        assertEq(battery.gasReserve(), 0);
+        assertEq(battery.treasury(), 0);
+        assertEq(address(battery).balance, 0);
+    }
 }
 
 contract DelegateCaller {

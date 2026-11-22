@@ -137,9 +137,9 @@ contract GasVault is IGasVault {
         treasury = 0;
         emit GasReserveUpdated(0);
         emit TreasuryUpdated(0);
+        emit Withdrawn(owner, amount); // P9: the event precedes the external call
         (bool ok,) = owner.call{value: amount}("");
         if (!ok) revert TransferFailed();
-        emit Withdrawn(owner, amount);
     }
 
     /// @dev Direct transfers are denied (donation policy — G15: the

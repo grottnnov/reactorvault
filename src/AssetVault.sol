@@ -282,9 +282,9 @@ contract AssetVault is IAssetVault {
         uint256 amount = address(this).balance;
         totalDeposited = 0;
         treasurySent = 0;
+        emit Withdrawn(owner, amount); // P9: the event precedes the external call
         (bool ok,) = owner.call{value: amount}("");
         if (!ok) revert TransferFailed();
-        emit Withdrawn(owner, amount);
     }
 
     /// @dev Direct transfers are denied (donation policy — G15: the
