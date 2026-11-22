@@ -276,6 +276,7 @@ contract RulesEngineTest is Test {
     function test_UnwiredExecutorDoesNotBurnCooldown() public {
         uint256 topic2 = uint256(keccak256("Second(uint256)"));
         engine.setRule(SOURCE_CHAIN, topic2, true, 1 days, OTHER_CHAIN);
+        vm.warp(1 days); // past the rule's own cooldown (lastFiredAt starts at 0)
 
         // no executor on OTHER_CHAIN yet — the event is consumed silently
         _react(SOURCE_CHAIN, topic2, 500);
