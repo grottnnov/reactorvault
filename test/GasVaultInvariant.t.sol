@@ -14,11 +14,13 @@ contract GasVaultHandler is Test {
     GasVault public battery;
     address public alice;
     address public executor;
+    address public owner;
 
-    constructor(GasVault battery_, address alice_, address executor_) {
+    constructor(GasVault battery_, address alice_, address executor_, address owner_) {
         battery = battery_;
         alice = alice_;
         executor = executor_;
+        owner = owner_;
     }
 
     /// @dev Deposits are sent by the handler itself (funded in setUp).
@@ -51,11 +53,15 @@ contract GasVaultHandler is Test {
         battery.releaseReserveTo(sink, amount);
     }
 
+    /// @dev The treasury exit MUST run under the real owner (the deployer
+    ///      of the battery in setUp). A former version pranked `alice` and
+    ///      the selector always reverted NotOwner — the treasury exit was
+    ///      never exercised by the fuzzer, and the invariant held trivially.
     function withdrawTreasury(uint256 amount) external {
         uint256 t = battery.treasury();
         amount = bound(amount, 0, t);
         if (amount == 0) return;
-        vm.prank(alice);
+        vm.prank(owner);
         battery.withdrawTreasury(makeAddr("conv"), amount);
     }
 }
@@ -71,7 +77,7 @@ contract GasVaultInvariantTest is Test {
         battery = new GasVault();
         battery.authorizeExecutor(executor);
         vm.deal(alice, 1_000 ether);
-        handler = new GasVaultHandler(battery, alice, executor);
+        handler = new GasVaultHandler(battery, alice, executor, address(this));
         vm.deal(address(handler), 1_000 ether); // backs the deposit selectors
 
         targetContract(address(handler));
