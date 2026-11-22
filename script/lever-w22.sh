@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
-# lever-w22.sh — демо-плечо оператора (W2.2 шаг 3): оператор САМ даёт
-# рынку ликвидность как заимодавец (бутстрап — форк-тест 11.11: сейф
-# никогда не придёт в пустой рынок, а заём без ликвидности невозможен),
-# затем залог и заём. Заём поднимает ставку >1%/год → следующий
-# будильник переводит капитал сейфа Aave → Morpho.
+# lever-w22.sh — the operator's demo leverage (W2.2 step 3): the
+# operator HIMSELF lends the market liquidity (bootstrap — the 11.11
+# fork test: the safe never enters an empty market, and a borrow
+# without liquidity is impossible), then the collateral and the
+# borrow. The borrow pushes the rate >1%/year → the next alarm-clock
+# tick moves the safe's capital Aave → Morpho.
 #
-# Суммы env-настраиваемы: при ETH ≥ ~0.025defaults хватает; при нехватке
-# скрипт откажется ДО траты нонсов. Environment: DEPLOYER_PRIVATE_KEY, .env.
+# Amounts are env-tunable: with ETH ≥ ~0.025 the defaults suffice; if
+# short, the script refuses BEFORE spending nonces. Environment:
+# DEPLOYER_PRIVATE_KEY, .env.
 set -uo pipefail
 export PATH="$PATH:${HOME:-/root}/.foundry/bin"
 cd "$(dirname "$0")/.."
@@ -33,20 +35,20 @@ sendS() { cast send "$@" --rpc-url "$RPC_SEP" --private-key "$PK" --json 2>/dev/
 
 BAL=$(cast balance "$A" --rpc-url "$RPC_SEP")
 NEED=$((WRAP_W + 1500000000000000))
-echo "== A@Sepolia=$(cast from-wei $BAL) ETH, нужно ~$(cast from-wei $NEED)"
-[ "$(python3 -c "print(1 if $BAL > $NEED else 0)")" = "1" ] || { echo "NOT ENOUGH ETH — задай W22_LEVER_* меньше или пополни A"; exit 1; }
+echo "== A@Sepolia=$(cast from-wei $BAL) ETH, need ~$(cast from-wei $NEED)"
+[ "$(python3 -c "print(1 if $BAL > $NEED else 0)")" = "1" ] || { echo "NOT ENOUGH ETH — set W22_LEVER_* lower or top up A"; exit 1; }
 
 MP="($WETH,$WETH,$ORACLE,$IRM,$LLTV)"
 echo "== [1] WETH wrap($LEND+$COLL) → approve Morpho"
 sendS "$WETH" 'deposit()' --value "$WRAP_W"
 sendS "$WETH" 'approve(address,uint256)' "$MORPHO" "$(python3 -c 'print(2**256-1)')"
 
-echo "== [2] ликвидность заимодавца → залог → заём"
+echo "== [2] lender liquidity → collateral → borrow"
 sendS "$MORPHO" 'supply((address,address,address,address,uint256),uint256,uint256,address,bytes)' "$MP" "$LEND_W" 0 "$A" 0x
 sendS "$MORPHO" 'supplyCollateral((address,address,address,address,uint256),uint256,address,bytes)' "$MP" "$COLL_W" "$A" 0x
 sendS "$MORPHO" 'borrow((address,address,address,address,uint256),uint256,uint256,address,address)' "$MP" "$BORROW_W" 0 "$A" "$A"
 
-echo "== [3] позитив-сверка: ставка рынка >1%/год (плечо работает)"
+echo "== [3] positive check: market rate >1%/year (the leverage works)"
 RATE=$(cast call "$MORPHO_AD" 'supplyRatePerYear()(uint256)' --rpc-url "$RPC_SEP")
-echo "  supplyRatePerYear = $RATE (ожидаю > 10000000000000000)"
-[ "$(python3 -c "print(1 if int('$RATE') > 10**16 else 0)")" = "1" ] && echo "  ✅ lever live" || echo "  ❌ ставка не поднялась — разбирать (utilization?)"
+echo "  supplyRatePerYear = $RATE (expect > 10000000000000000)"
+[ "$(python3 -c "print(1 if int('$RATE') > 10**16 else 0)")" = "1" ] && echo "  ✅ lever live" || echo "  ❌ the rate did not rise — investigate (utilization?)"

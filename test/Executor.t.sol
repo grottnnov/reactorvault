@@ -208,7 +208,7 @@ contract ExecutorTest is Test {
         c.callRefuel(address(executor), proxy, gasPayer);
     }
 
-    /// v3: реестр сейфов — add/remove + батарея отдельно.
+    /// v3: the vault registry — add/remove + a separate battery.
     function testVaultRegistry() public {
         AssetVault newVault = new AssetVault();
         GasVault newBattery = new GasVault();
@@ -222,7 +222,7 @@ contract ExecutorTest is Test {
         assertEq(executor.vaultCount(), 2);
         assertTrue(executor.isVault(address(newVault)));
 
-        // повторное добавление и удаление несуществующего — реверт
+        // a duplicate add and removing a nonexistent vault — revert
         vm.startPrank(alice);
         vm.expectRevert(Executor.ZeroAddress.selector);
         executor.addVault(IExecutorVault(address(newVault)));
@@ -238,8 +238,8 @@ contract ExecutorTest is Test {
         assertEq(address(executor.gasVault()), address(newBattery));
     }
 
-    /// Мульти-актив: оба сейфа ребалансируются одним тиком — каждый
-    /// по СВОИМ пулам (v3-сценарий ETH + USDC).
+    /// Multi-asset: both safes are rebalanced by one tick — each by
+    /// its OWN pools (the v3 ETH + USDC scenario).
     function testRebalanceCoversAllVaults() public {
         (MockPool a, MockPool b) = _armedPools();
         b.setRatePerYear(0.09e18);

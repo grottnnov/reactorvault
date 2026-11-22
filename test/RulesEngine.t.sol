@@ -225,18 +225,18 @@ contract RulesEngineTest is Test {
         assertEq(engine.firedCount(), 2);
     }
 
-    /// v2 (универсальность цепей, 17.11): назначение живёт В ПРАВИЛЕ —
-    /// перенаправление = перезапись правила с новой цепью + исполнитель
-    /// в реестре. Глобальный сеттер — только дефолт для новых правил.
+    /// v2 (chain generality, 17.11): the destination lives IN THE RULE —
+    /// redirecting = rewriting the rule with a new chain + an executor
+    /// in the registry. The global setter is only the default for new rules.
     function testRuleLevelDestinationRouting() public {
-        // правило изначально на DEST_CHAIN (из initialize)
+        // the rule initially targets DEST_CHAIN (from initialize)
         _react(SOURCE_CHAIN, RATE_CHANGE_TOPIC, 100);
         (uint256 cChainId, address cRecipient,,,) = sys.callbackRequests(0);
         assertEq(cChainId, DEST_CHAIN);
         assertEq(cRecipient, executor);
 
-        // подключаем вторую сеть: исполнитель на OTHER_CHAIN + правило
-        // той же подписки перенаправляем туда
+        // wire in a second network: an executor on OTHER_CHAIN + the
+        // rule of the same subscription is redirected there
         address executorBase = makeAddr("executorBase");
         vm.startPrank(engine.owner());
         engine.setExecutor(OTHER_CHAIN, executorBase);
@@ -250,8 +250,8 @@ contract RulesEngineTest is Test {
         assertEq(cRecipient, executorBase, "registry executor on that chain");
     }
 
-    /// Цепь без зарегистрированного исполнителя — правило молчит
-    /// (ни одного оплаченного колбека в пустоту).
+    /// A chain without a registered executor — the rule stays silent
+    /// (not a single paid callback into the void).
     function testUnwiredDestinationStaysSilent() public {
         vm.startPrank(engine.owner());
         engine.setRule(SOURCE_CHAIN, RATE_CHANGE_TOPIC, true, COOLDOWN, 42161);

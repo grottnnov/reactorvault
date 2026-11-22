@@ -114,7 +114,7 @@ contract ExecutorRebalanceForkTest is Test {
         // vault's capital still sits with Aave (the fresh Morpho market
         // yields zero) — so the operator SEEDS the market as a lender
         // first, then collateralizes and borrows. That is the live
-        // bootstrapping shape ("оператор финансирует доходность").
+        // bootstrapping shape ("the operator finances the yield").
         vm.deal(operator, 0.1 ether);
         IMorpho.MarketParams memory mp = _mp();
         vm.startPrank(operator);

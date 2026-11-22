@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.29;
 
-/// @dev Минимальный ERC-20 для юнит-тестов USDC-сейфа (6 десятичных,
-///      как настоящий USDC). Только то, что нужно тестам: mint любым,
-///      transfer/transferFrom/approve без неожиданностей.
+/// @dev A minimal ERC-20 for the USDC safe's unit tests (6 decimals,
+///      like the real USDC). Only what the tests need: mint by anyone,
+///      transfer/transferFrom/approve without surprises.
 contract MockERC20 {
     string public constant symbol = "USDC";
     uint8 public constant decimals = 6;
@@ -33,7 +33,7 @@ contract MockERC20 {
     function transferFrom(address from, address to, uint256 value) external returns (bool) {
         uint256 allowed = allowance[from][msg.sender];
         require(allowed >= value, "allowance");
-        // USDC живёт без бесконечных allowance-исключений — списываем всегда
+        // USDC lives without an infinite-allowance exemption — always deduct
         allowance[from][msg.sender] = allowed - value;
         _move(from, to, value);
         return true;

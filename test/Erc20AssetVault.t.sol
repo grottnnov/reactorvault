@@ -5,9 +5,9 @@ import {Test} from "forge-std/Test.sol";
 import {Erc20AssetVault, IERC20Asset} from "../../src/Erc20AssetVault.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 
-/// @dev USDC-сейф (ADR-EXPANSION «новый актив = новый экземпляр»):
-///      депозит через transferFrom, казначейская доля копится внутри
-///      (в USDC), рабочий капитал — в адаптерах пулов. Инвариант:
+/// @dev USDC safe (ADR-EXPANSION "new asset = new instance"): deposit
+///      via transferFrom, the treasury share accrues inside (in USDC),
+///      working capital sits in pool adapters. Invariant:
 ///      tokenBalance + totalInPools + treasuryWithdrawn ≡ totalDeposited.
 contract Erc20AssetVaultTest is Test {
     MockERC20 token;
@@ -15,7 +15,7 @@ contract Erc20AssetVaultTest is Test {
     address user = makeAddr("user");
     address stranger = makeAddr("stranger");
 
-    // 6 десятичных: 100.000000 USDC
+    // 6 decimals: 100.000000 USDC
     uint256 constant D100 = 100_000_000;
     uint256 constant D10 = 10_000_000;
 
@@ -27,22 +27,23 @@ contract Erc20AssetVaultTest is Test {
         token.approve(address(vault), type(uint256).max);
     }
 
-    /// Депозит без approve — честный реверт токена.
+    /// Deposit without approve — the token's honest revert.
     function testDepositWithoutApprovalReverts() public {
         vm.prank(stranger);
         vm.expectRevert("allowance");
         vault.deposit(D10);
     }
 
-    /// Нулевой депозит — реверт (как в ETH-сейфе).
+    /// Zero deposit — revert (as in the ETH safe).
     function testZeroDepositReverts() public {
         vm.prank(user);
         vm.expectRevert(Erc20AssetVault.ZeroAmount.selector);
         vault.deposit(0);
     }
 
-    /// Депозит: баланс сейфа, учёт, событие; ETH в сейф не принимается
-    /// (контракт не payable — прямой перевод невозможен на уровне типа).
+    /// Deposit: the safe's balance, accounting, an event; ETH is not
+    /// accepted into the safe (the contract is not payable — a direct
+    /// transfer is impossible at the type level).
     function testDepositAccounting() public {
         vm.prank(user);
         vault.deposit(D100);
@@ -51,8 +52,8 @@ contract Erc20AssetVaultTest is Test {
         assertEq(token.balanceOf(user), 1_000_000_000 - D100);
     }
 
-    /// Казначейская доля: 5% копится ВНУТРИ сейфа (в USDC), никуда не
-    /// уходит без люка — свободный капитал = баланс − казна.
+    /// Treasury share: 5% accrues INSIDE the safe (in USDC) and goes
+    /// nowhere without the hatch — free capital = balance − treasury.
     function testTreasuryStaysInside() public {
         vm.prank(vault.owner());
         vault.setTreasuryBps(500);
@@ -62,19 +63,19 @@ contract Erc20AssetVaultTest is Test {
         assertEq(vault.rebalanceTarget(), D100 - 5_000_000, "free = balance - treasury");
     }
 
-    /// bps-потолок 10_000 — как в ETH-сейфе.
+    /// bps ceiling of 10_000 — as in the ETH safe.
     function testTreasuryBpsBound() public {
         vm.prank(vault.owner());
         vm.expectRevert(Erc20AssetVault.BadParams.selector);
         vault.setTreasuryBps(10_001);
     }
 
-    /// Инвариант G4 проверяется в каждом сценрии ниже после изменений
-    /// состояния (deposit → deploy → recall → withdrawAll); отдельный
-    /// пустой тест не нужен.
+    /// The G4 invariant is checked in every scenario below after state
+    /// changes (deposit → deploy → recall → withdrawAll); a separate
+    /// empty test is not needed.
 
-    /// withdrawAll: возвращает ВСЁ (рабочий + казну) владельцу,
-    /// ledger обнуляется — «выход, который работает всегда».
+    /// withdrawAll: returns EVERYTHING (working + treasury) to the
+    /// owner, the ledger zeroes out — "an exit that always works".
     function testWithdrawAllReturnsEverything() public {
         vm.prank(vault.owner());
         vault.setTreasuryBps(500);
@@ -89,14 +90,14 @@ contract Erc20AssetVaultTest is Test {
         assertEq(vault.treasuryTaken(), 0);
     }
 
-    /// withdrawAll — только owner.
+    /// withdrawAll — owner only.
     function testWithdrawAllOnlyOwner() public {
         vm.prank(stranger);
         vm.expectRevert(Erc20AssetVault.NotOwner.selector);
         vault.withdrawAll();
     }
 
-    /// deployToPool: только executor; чужой адрес — реверт.
+    /// deployToPool: executor only; a stranger address — revert.
     function testDeployOnlyExecutor() public {
         address adapter = makeAddr("adapter");
         vm.prank(vault.owner());
@@ -106,7 +107,7 @@ contract Erc20AssetVaultTest is Test {
         vault.deployToPool(adapter, D10);
     }
 
-    /// deployToPool в неизвестный адаптер — реверт.
+    /// deployToPool into an unknown adapter — revert.
     function testDeployUnknownAdapter() public {
         vm.prank(vault.owner());
         vault.authorizeExecutor(stranger);
@@ -115,13 +116,13 @@ contract Erc20AssetVaultTest is Test {
         vault.deployToPool(makeAddr("ghost"), D10);
     }
 
-    /// deployToPool не может вывести казначейскую долю: свободный
-    /// капитал = баланс − казна (главная разница против ETH-сейфа).
+    /// deployToPool cannot withdraw the treasury share: free capital =
+    /// balance − treasury (the main difference from the ETH safe).
     function testDeployCannotTouchTreasury() public {
         vm.prank(vault.owner());
         vault.setTreasuryBps(500);
         vm.prank(user);
-        vault.deposit(D100); // казна 5, свободно 95
+        vault.deposit(D100); // treasury 5, free 95
 
         MockPoolAdapter adapter = new MockPoolAdapter(token);
         vm.startPrank(vault.owner());
@@ -129,16 +130,16 @@ contract Erc20AssetVaultTest is Test {
         vault.authorizeExecutor(address(this));
         vm.stopPrank();
 
-        vault.deployToPool(address(adapter), D100 - 5_000_000); // 95 — ок
+        vault.deployToPool(address(adapter), D100 - 5_000_000); // 95 — ok
         assertEq(token.balanceOf(address(adapter)), D100 - 5_000_000);
 
         vm.prank(address(this));
         vm.expectRevert(Erc20AssetVault.InsufficientFree.selector);
-        vault.deployToPool(address(adapter), 1); // казна недоступна
+        vault.deployToPool(address(adapter), 1); // the treasury is untouchable
     }
 
-    /// Полный цикл с мок-адаптером: депозит → deploy → recall →
-    /// withdrawAll; инвариант на каждом шаге.
+    /// Full cycle with the mock adapter: deposit → deploy → recall →
+    /// withdrawAll; the invariant at every step.
     function testFullCycleWithAdapter() public {
         vm.prank(vault.owner());
         vault.setTreasuryBps(500);
@@ -153,7 +154,7 @@ contract Erc20AssetVaultTest is Test {
 
         vault.deployToPool(address(adapter), D100 - 5_000_000);
         assertEq(vault.inPoolOf(address(adapter)), D100 - 5_000_000, "deployed");
-        // инвариант: balance(5) + inPools(95) + withdrawn(0) ≡ deposited(100)
+        // invariant: balance(5) + inPools(95) + withdrawn(0) ≡ deposited(100)
         assertEq(token.balanceOf(address(vault)) + vault.totalInPools(), D100);
 
         vault.recallFromPool(address(adapter), D100 - 5_000_000);
@@ -165,10 +166,10 @@ contract Erc20AssetVaultTest is Test {
         assertEq(token.balanceOf(vault.owner()), D100);
     }
 
-    // ------------------------------------------------------- доли (4626-lite)
+    // ------------------------------------------------------- shares (4626-lite)
 
-    /// Первый депозит при пустом сейфе: доли = активы (без офсетных
-    /// искажений), пыль не минтится.
+    /// The first deposit into an empty safe: shares = assets (no
+    /// offset distortion), no dust minted.
     function testFirstDepositMintsProportionalShares() public {
         vm.prank(user);
         vault.deposit(D100);
@@ -177,34 +178,34 @@ contract Erc20AssetVaultTest is Test {
         assertEq(vault.totalAssets(), D100, "NAV == assets");
     }
 
-    /// Донат-атака первого депозита МЕРТВА: прямой перевод токена на
-    /// сейф не входит в NAV (ledger), доли жертвы честные, атакующий
-    /// забирает только своё.
+    /// The first-deposit donation attack is DEAD: a direct token
+    /// transfer to the safe does not enter NAV (the ledger), the
+    /// victim's shares are fair, the attacker takes only their own.
     function testDonationAttackNeutralized() public {
         address attacker = makeAddr("attacker");
         token.mint(attacker, 50_000_000); // 50 USDC
         vm.startPrank(attacker);
         token.approve(address(vault), type(uint256).max);
         vault.deposit(1_000_000); // 1 USDC
-        token.transfer(address(vault), 49_000_000); // ДОНАТ 49 USDC — раздуть NAV
+        token.transfer(address(vault), 49_000_000); // DONATION of 49 USDC — to inflate NAV
         vm.stopPrank();
 
-        // жертва входит ПОСЛЕ «раздувания»
+        // the victim enters AFTER the "inflation"
         vm.prank(user);
         vault.deposit(D100);
         uint256 victimShares = vault.shareOf(user);
         assertApproxEqAbs(victimShares, D100, 1_000, "fair shares despite donation");
 
-        // атакующий гасит свои доли — уносит только своё, без навара
-        uint256 attackerShares = vault.shareOf(attacker); // prank сгорает на вызове!
+        // the attacker redeems their shares — takes only their own, no loot
+        uint256 attackerShares = vault.shareOf(attacker); // the prank burns on the call!
         vm.prank(attacker);
         vault.redeem(attackerShares);
         assertApproxEqAbs(token.balanceOf(attacker), 1_000_000, 5_000, "no stolen yield");
-        // жертва не пострадала: её доля NAV сохранилась
+        // the victim is unharmed: their share of NAV is preserved
         assertApproxEqAbs(vault.convertToAssets(victimShares), D100, 60_000, "victim intact (offset-scale)");
     }
 
-    /// Округления в пользу сейфа: вывод даёт не больше причитающегося.
+    /// Rounding in the safe's favor: the payout never exceeds what is due.
     function testRedeemRoundsInVaultFavor() public {
         vm.prank(user);
         vault.deposit(D100);
@@ -213,8 +214,8 @@ contract Erc20AssetVaultTest is Test {
         assertLe(out, D100, "never more than fair");
     }
 
-    /// redeem сам отзывает из пулов, если свободных не хватает —
-    /// «выход работает всегда».
+    /// redeem itself recalls from pools when free capital is short —
+    /// "the exit always works".
     function testRedeemRecallsFromPoolsWhenFreeInsufficient() public {
         vm.prank(user);
         vault.deposit(D100);
@@ -223,7 +224,7 @@ contract Erc20AssetVaultTest is Test {
         vault.authorizePoolAdapter(address(adapter));
         vault.authorizeExecutor(address(this));
         vm.stopPrank();
-        vault.deployToPool(address(adapter), D100); // всё в пуле, свободно 0
+        vault.deployToPool(address(adapter), D100); // everything in the pool, free 0
 
         uint256 sh = vault.shareOf(user);
         vm.prank(user);
@@ -233,31 +234,32 @@ contract Erc20AssetVaultTest is Test {
         assertEq(vault.inPoolOf(address(adapter)), 0);
     }
 
-    /// Казна не размывает юзеров: NAV считает активы МИНУС казну;
-    /// комиссия платится ДЕПОЗИТОРОМ (его доли стоят дешевле актива),
-    /// второй юзер входит по той же цене — размывания нет.
+    /// The treasury does not dilute users: NAV counts assets MINUS the
+    /// treasury; the fee is paid by the DEPOSITOR (their shares cost
+    /// less than the asset), the second user enters at the same
+    /// price — no dilution.
     function testTreasuryDoesNotDilute() public {
         vm.prank(vault.owner());
         vault.setTreasuryBps(500);
         vm.prank(user);
-        vault.deposit(D100); // казна 5, юзерских 95, долей 100
+        vault.deposit(D100); // treasury 5, user's 95, shares 100
         assertEq(vault.totalAssets(), D100 - 5_000_000, "NAV excludes treasury");
 
-        // второй юзер входит той же ценой; СВОЮ комиссию платит сам
+        // the second user enters at the same price; pays their OWN fee
         address second = makeAddr("second");
         token.mint(second, 95_000_000);
         vm.startPrank(second);
         token.approve(address(vault), type(uint256).max);
-        vault.deposit(95_000_000); // комиссия 4.75, рабочих 90.25
+        vault.deposit(95_000_000); // fee 4.75, working 90.25
         vm.stopPrank();
         uint256 s2 = vault.shareOf(second);
         assertApproxEqAbs(s2, 90_250_000, 100_000, "shares for working assets");
-        // доля первого ЦЕЛА: платит только входящий (fee-on-mint)
+        // the first user's share is INTACT: only the entrant pays (fee-on-mint)
         assertApproxEqAbs(vault.convertToAssets(vault.shareOf(user)), 95_000_000, 60_000, "first intact");
     }
 
-    /// Реентрансия: злой адаптер лезет в deployToPool из withdraw —
-    /// гвард CEI обязан ревертить всю попытку.
+    /// Reentrancy: an evil adapter dives into deployToPool from within
+    /// withdraw — the CEI guard must revert the whole attempt.
     function testRecallReentrancyBlocked() public {
         vm.prank(user);
         vault.deposit(D100);
@@ -269,15 +271,17 @@ contract Erc20AssetVaultTest is Test {
         vault.deployToPool(address(evil), D10);
 
         vm.prank(address(this));
-        // гвард откинул реентрантный deployToPool; расчёт затем ловит
-        // недовод (0 против D10 > RECALL_DUST) и ревертит весь отзыв
+        // the guard rejected the reentrant deployToPool; the settlement
+        // then catches the shortfall (0 vs D10 > RECALL_DUST) and
+        // reverts the whole recall
         vm.expectRevert(Erc20AssetVault.SettleMismatch.selector);
         vault.recallFromPool(address(evil), D10);
     }
 
-    /// Расчёты с пылевым допуском RECALL_DUST (0.01 USDC): недовод
-    /// внутри допуска (индексное округление пулов) — принят и учтён
-    /// по факту; недовод за допуском — реверт всего отзыва.
+    /// Settlement with the RECALL_DUST tolerance (0.01 USDC): a
+    /// shortfall within the tolerance (pool index rounding) —
+    /// accepted and booked at actuals; a shortfall beyond the
+    /// tolerance — revert of the whole recall.
     function testRecallDustToleranceAndBeyond() public {
         vm.prank(user);
         vault.deposit(D100);
@@ -288,13 +292,13 @@ contract Erc20AssetVaultTest is Test {
         vm.stopPrank();
         vault.deployToPool(address(adapter), D10);
 
-        // внутри допуска: учёт по факту (вернулось D10-1)
+        // within the tolerance: booked at actuals (D10-1 came back)
         adapter.setShortfall(1);
         vault.recallFromPool(address(adapter), D10);
         assertEq(vault.inPoolOf(address(adapter)), 1, "booked actual returned");
 
-        // за допуском: реверт
-        vault.deployToPool(address(adapter), D10 - 1); // свободно хватает
+        // beyond the tolerance: revert
+        vault.deployToPool(address(adapter), D10 - 1); // free capital suffices
         adapter.setShortfall(50_000); // 0.05 USDC > RECALL_DUST
         vm.prank(address(this));
         vm.expectRevert(Erc20AssetVault.SettleMismatch.selector);
@@ -302,8 +306,8 @@ contract Erc20AssetVaultTest is Test {
     }
 }
 
-/// @dev Злой адаптер: при withdraw пытается реентрантно войти в
-/// deployToPool того же сейфа (проверка гварда CEI).
+/// @dev An evil adapter: at withdraw it tries to reenter deployToPool
+///      of the same safe (a check of the CEI guard).
 contract ReentrantAdapter {
     Erc20AssetVault public vault;
 
@@ -313,18 +317,18 @@ contract ReentrantAdapter {
 
     function withdraw(uint256) external returns (bool) {
         try vault.deployToPool(address(this), 1) {
-        // реентрансия прошла бы — её бы не поймал расчёт
+        // reentrancy would have passed — the settlement would not catch it
         }
             catch {
-            // гвард отработал: попытка откатилась внутри адаптера
+            // the guard did its job: the attempt rolled back inside the adapter
         }
-        return true; // и тихо «успешно» возвращаемся без денег
+        return true; // and quietly return "successfully" without the money
     }
 }
 
-/// @dev Мок адаптера для юнит-тестов сейфа: держит USDC, возвращает
-///      по команде withdraw (с программируемым недоводом — на тест
-///      строгих расчётов).
+/// @dev A pool adapter mock for the safe's unit tests: holds USDC,
+///      returns it on the withdraw command (with a programmable
+///      shortfall — for the strict-settlement test).
 contract MockPoolAdapter {
     MockERC20 public immutable token;
     uint256 public shortfall;
@@ -333,7 +337,7 @@ contract MockPoolAdapter {
         token = token_;
     }
 
-    /// NAV-слой: позиция адаптера = его баланс токена
+    /// NAV layer: the adapter's position = its token balance
     function truePosition() external view returns (uint256) {
         return token.balanceOf(address(this));
     }

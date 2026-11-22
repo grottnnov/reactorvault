@@ -38,8 +38,8 @@ contract FuelConverterTest is Test {
     address internal constant SEPOLIA_PROXY = 0xAa14d9Cd0f788Ca23d11805986C1d8bd035D23b4;
     uint256 constant T_HORIZON = uint256(keccak256("HorizonAlert(uint256,uint256,uint256,uint8)"));
     uint256 constant T_FUNDED = uint256(keccak256("Funded(address,uint256)"));
-    /// @dev Живой Lasna-плательщик крана: Funded(block 8 490 015,
-    ///      16.11, выплата 2.0 lREACT за покупку 0.02 ETH — курс 1:100).
+    /// @dev The live faucet payer on Lasna: Funded(block 8 490 015,
+    ///      16.11, payout 2.0 lREACT for a 0.02 ETH purchase — rate 1:100).
     address internal constant FAUCET_RVM = 0x5cBC52A390E69D9193996AeBFB53F7b97DB6cf51;
 
     OmniMockSystem sys;
@@ -106,7 +106,7 @@ contract FuelConverterTest is Test {
         buyer.buyFuel{value: 0}(address(converter), blockNumber_);
     }
 
-    /// @dev Живая доставка Funded: платит кран (topic1) на склад.
+    /// @dev A live Funded delivery: the faucet pays (topic1) to the depot.
     function _funded(address payer, uint256 amount, uint256 blockNumber_) internal {
         vm.prank(OMNI_SYSTEM);
         converter.react(
@@ -307,8 +307,9 @@ contract FuelConverterTest is Test {
         assertEq(sys.callbackCount(), cb, "inactive converter ignores deliveries");
     }
 
-    /// ADR-EXPANSION: конвертер и покупщик — партнёры сменяемы;
-    /// смена склада у конвертера переставляет подписку HorizonAlert.
+    /// ADR-EXPANSION: the converter and the buyer are replaceable
+    /// partners; changing the converter's depot rewires the
+    /// HorizonAlert subscription.
     function testPartnersRewire() public {
         uint256 before = sys.subscriptionCount();
         address newFund = makeAddr("newFund");
@@ -329,7 +330,7 @@ contract FuelConverterTest is Test {
         assertEq(converter.buyer(), newBuyerAddr);
         assertEq(sys.subscriptionCount(), before, "rewire: -old +new, BOTH topics move with the fund");
 
-        // покупщик: получатель топлива сменяем
+        // the buyer: the fuel recipient is replaceable
         vm.startPrank(buyer.owner());
         vm.expectRevert(FuelBuyer.ZeroAddress.selector);
         buyer.setFund(address(0));
@@ -340,8 +341,8 @@ contract FuelConverterTest is Test {
 
     // ------------------------------------------------ ADR-PURCHASE-SAFETY B2
 
-    /// Рунбук-стоп (G1.7): pause() покупщика — покупка ревертится,
-    /// деньги не трогаются; unpause() возвращает контур в строй.
+    /// Runbook stop (G1.7): the buyer's pause() — the purchase reverts,
+    /// the money is untouched; unpause() puts the circuit back in service.
     function testPauseBlocksBuyAndResumes() public {
         _horizon(1, 100);
         assertEq(sys.callbackCount(), 1);
@@ -366,9 +367,9 @@ contract FuelConverterTest is Test {
         assertEq(faucet.received(), 0.02 ether);
     }
 
-    /// Стоп-курс: выплата крана 0.9 при минимуме 1.0 → BadRate +
-    /// заказы остановлены; следующая тревога НЕ заказывает;
-    /// реактивация — только owner-люк после разбора.
+    /// Rate stop: a faucet payout of 0.9 at the 1.0 minimum → BadRate +
+    /// orders stopped; the next alert does NOT order;
+    /// reactivation — the owner hatch only, after investigation.
     function testBadRateStopsOrdersAndHatchRevives() public {
         _horizon(1, 100);
         assertEq(sys.callbackCount(), 1);
@@ -378,12 +379,12 @@ contract FuelConverterTest is Test {
         _funded(FAUCET_RVM, 0.9 ether, 150);
         assertTrue(converter.rateStopped(), "below minimum -> stopped");
 
-        // тревога после cooldown — молчит (плохой курс ≠ транзиент)
+        // an alert after the cooldown — silent (a bad rate is not transient)
         vm.warp(block.timestamp + 12 hours + 1 seconds);
         _horizon(1, 200);
         assertEq(sys.callbackCount(), 1, "no orders while rate-stopped");
 
-        // люк — только owner
+        // the hatch — owner only
         vm.prank(makeAddr("nobody"));
         vm.expectRevert(FuelConverter.NotOwner.selector);
         converter.clearRateStop();
@@ -395,8 +396,9 @@ contract FuelConverterTest is Test {
         assertEq(sys.callbackCount(), 2, "orders resume after the hatch");
     }
 
-    /// Повторная плохая выплата после стопа НЕ пере-эммитит BadRate
-    /// (стоп залип до люка — «включение — owner-люк после разбора»).
+    /// A second bad payout after the stop does NOT re-emit BadRate
+    /// (the stop latches until the hatch — "re-enabling is the owner
+    /// hatch, after investigation").
     function testBadRateStickyUntilHatch() public {
         _funded(FAUCET_RVM, 0.9 ether, 100);
         assertTrue(converter.rateStopped());
@@ -412,8 +414,8 @@ contract FuelConverterTest is Test {
         assertTrue(converter.rateStopped());
     }
 
-    /// Фильтр «отправитель = кран»: Funded от чужого адреса — мимо
-    /// (никакой телеметрии, никакого стопа даже при мелкой выплате).
+    /// The "sender = faucet" filter: Funded from a stranger address —
+    /// ignored (no telemetry, no stop even on a small payout).
     function testFundedFromStrangerIgnored() public {
         address stranger = makeAddr("stranger");
         _funded(stranger, 0.001 ether, 100);
@@ -425,8 +427,9 @@ contract FuelConverterTest is Test {
         assertEq(sys.callbackCount(), 1, "orders still flow");
     }
 
-    /// Телеметрия: живая выплата 16.11 (2.0 за покупку) ложится в EMA;
-    /// вторая выплата усредняется; решение (заказы) не меняется.
+    /// Telemetry: the live 16.11 payout (2.0 per purchase) lands in
+    /// the EMA; a second payout is averaged in; the decision
+    /// (orders) is unchanged.
     function testRateEmaTelemetry() public {
         _funded(FAUCET_RVM, 2.0 ether, 100);
         assertEq(converter.payouts(), 1);
@@ -438,7 +441,7 @@ contract FuelConverterTest is Test {
         assertFalse(converter.rateStopped(), "healthy payouts never stop");
     }
 
-    /// Граница минимума: ровно 1.0 — ещё здоровая выплата (строгий <).
+    /// The minimum boundary: exactly 1.0 is still a healthy payout (strict <).
     function testBoundaryPayoutAtMinimumIsHealthy() public {
         _funded(FAUCET_RVM, 1.0 ether, 100);
         assertFalse(converter.rateStopped(), "exactly the minimum is acceptable");

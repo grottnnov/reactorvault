@@ -21,7 +21,7 @@ contract MockPool is IPoolAdapter {
     }
 
     function truePosition() external view returns (uint256) {
-        return address(this).balance; // principal в нативе
+        return address(this).balance; // principal in native
     }
 
     function totalSupplied() external view override returns (uint256) {

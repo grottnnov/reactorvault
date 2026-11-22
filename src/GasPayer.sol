@@ -16,15 +16,15 @@ import {ISystemContract} from "reactive-lib-omni/interfaces/ISystemContract.sol"
 ///         (GasReserveUpdated), not the executor.
 ///         Idempotency: a processed-set of (chainId, blockNumber, topic0).
 contract GasPayer is AbstractReactive {
-    /// @notice Цепь-назначения колбеков долива — параметр деплоя
-    ///         (универсальность цепей, 17.11); на тестнете = 11155111.
+    /// @notice The destination chain of refuel callbacks — a deploy
+    ///         parameter (chain universality, 17.11); on the testnet = 11155111.
     uint256 public immutable destChainId;
     uint64 public constant ACTION_GAS_LIMIT = 1_000_000;
 
-    /// @notice Партнёры сменяемы owner'ом (ADR-EXPANSION: гварды —
-    ///         намертво, партнёры — ремонтные люки). Миграция эмиттера
-    ///         резерва переставляет подписку: отписка старого + подписка
-    ///         нового в одном вызове.
+    /// @notice Partners are replaceable by the owner (ADR-EXPANSION:
+    ///         guards are set in stone, partners are maintenance hatches).
+    ///         A reserve-emitter migration moves the subscription:
+    ///         unsubscribe the old + subscribe the new in one call.
     address public executor;
     address public vault; // emitter of GasReserveUpdated (the battery)
     uint256 public immutable ethLowTopic;
@@ -82,11 +82,12 @@ contract GasPayer is AbstractReactive {
         reserveTopic = reserveTopic_;
     }
 
-    /// @notice Смена исполнителя (адресат колбека долива) — без передеплоя.
-    ///         Подписка на крик ExecutorLowEth переезжает вместе с ним:
-    ///         отписка старого + подписка нового одним вызовом (CEI: поле
-    ///         и событие до внешних вызовов SYSTEM), иначе после
-    ///         передеплоя исполнителя кассир слушал бы мёртвый адрес.
+    /// @notice Executor replacement (the refuel callback recipient) —
+    ///         no redeploy needed. The ExecutorLowEth cry subscription
+    ///         moves with it: unsubscribe the old + subscribe the new in
+    ///         one call (CEI: the field and event before the external
+    ///         SYSTEM calls), otherwise after an executor redeploy the
+    ///         cashier would be listening to a dead address.
     function setExecutor(address executor_) external onlyOwner {
         if (executor_ == address(0)) revert ZeroAddress();
         emit PartnerRewired("executor", executor, executor_);
@@ -96,9 +97,10 @@ contract GasPayer is AbstractReactive {
         SYSTEM.subscribe(destChainId, executor_, ethLowTopic, REACTIVE_IGNORE, REACTIVE_IGNORE, REACTIVE_IGNORE);
     }
 
-    /// @notice Смена эмиттера резерва (батареи): подписка переезжает —
-    ///         отписка старого эмиттера и подписка нового одним вызовом.
-    ///         CEI: поле и событие до внешних вызовов SYSTEM.
+    /// @notice Reserve emitter (battery) replacement: the subscription
+    ///         moves — unsubscribe the old emitter and subscribe the new
+    ///         one in a single call. CEI: the field and event before the
+    ///         external SYSTEM calls.
     function setReserveEmitter(address vault_) external onlyOwner {
         if (vault_ == address(0)) revert ZeroAddress();
         emit PartnerRewired("reserveEmitter", vault, vault_);

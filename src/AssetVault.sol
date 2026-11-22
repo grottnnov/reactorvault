@@ -32,19 +32,19 @@ contract AssetVault is IAssetVault {
     /// @notice Treasury share of every deposit, basis points (≤ 10_000).
     uint32 public treasuryBps;
 
-    /// @notice Working deposits ever received (казна fee-on-mint
-    ///         уезжает в батарею и в ledger юзеров не входит).
+    /// @notice Working deposits ever received (the fee-on-mint treasury
+    ///         share leaves for the battery and is not in the users' ledger).
     uint256 public totalDeposited;
 
     /// @notice The treasury share already routed to the battery.
     uint256 public treasurySent;
 
     /// ------------------------------------------------- ERC-4626-lite (17.11)
-    /// @notice Учёт долей юзеров (ADR-MULTI-ASSET-CHAINS): депозит
-    ///         минтит доли на РАБОЧИЙ капитал (минус казна), redeem
-    ///         гасит; NAV = ledgerFree + реальные позиции пулов.
-    ///         Донаты эфира невозможны конструкцией (receive ревертит),
-    ///         офсет VIRTUAL_UNITS держит математику пустого сейфа.
+    /// @notice User share accounting (ADR-MULTI-ASSET-CHAINS): a deposit
+    ///         mints shares on WORKING capital (minus the treasury), a
+    ///         redeem burns them; NAV = ledgerFree + real pool positions.
+    ///         Ether donations are impossible by construction (receive
+    ///         reverts), the VIRTUAL_UNITS offset holds the empty safe's math.
     uint256 public totalShares;
     mapping(address => uint256) public shareOf;
 
@@ -173,8 +173,8 @@ contract AssetVault is IAssetVault {
         inPoolOf[adapter_] -= amount_;
     }
 
-    /// @notice Количество авторизованных адаптеров (мульти-активный
-    ///         исполнитель читает реестр сейфа).
+    /// @notice The number of authorized adapters (the multi-asset
+    ///         executor reads the safe's registry).
     function poolAdapterCount() external view returns (uint256) {
         return poolAdapters.length;
     }
@@ -210,7 +210,7 @@ contract AssetVault is IAssetVault {
         }
     }
 
-    /// @notice Юзерские активы: ledgerFree + реальные позиции пулов.
+    /// @notice User assets: ledgerFree + real pool positions.
     function totalAssets() public view returns (uint256) {
         uint256 invested;
         uint256 len = poolAdapters.length;
@@ -231,8 +231,8 @@ contract AssetVault is IAssetVault {
         return (shares_ * (totalAssets() + VIRTUAL_UNITS)) / (totalShares + VIRTUAL_UNITS);
     }
 
-    /// @notice Выход юзера: гасит доли, при нехватке свободных — сам
-    ///         отзывает из пулов. «Выход, который работает всегда».
+    /// @notice User exit: burns shares, recalls from pools itself when
+    ///         free capital is short. "An exit that always works".
     function redeem(uint256 shares_) external noDelegateCall {
         if (shares_ == 0) revert ZeroAmount();
         if (shareOf[msg.sender] < shares_) revert InsufficientShares();
@@ -263,7 +263,7 @@ contract AssetVault is IAssetVault {
     ///         deployed to pools is tracked in inPoolOf (it lives in
     ///         the adapters, not here).
     function rebalanceTarget() external view override returns (uint256 amount) {
-        amount = totalDeposited - totalInPools(); // ledger: донатов нет конструкцией
+        amount = totalDeposited - totalInPools(); // ledger: no donations by construction
     }
 
     /// @notice MVP scaffolding: a full sweep to the owner. Recalls

@@ -28,10 +28,11 @@ contract RulesEngine is AbstractReactive {
 
     address public owner;
 
-    /// @notice v2 (универсальность цепей, директива 17.11): каждое
-    ///         правило несёт СВОЮ цепь-назначение, исполнители — реестр
-    ///         «destChainId → адрес». Новая сеть = setExecutor(chain,
-    ///         addr) + правило с destChain=chain. Ни одной цепи в коде.
+    /// @notice v2 (chain universality, directive 17.11): every rule
+    ///         carries ITS OWN destination chain, executors are a
+    ///         "destChainId → address" registry. A new network =
+    ///         setExecutor(chain, addr) + a rule with destChain=chain.
+    ///         Not a single chain in code.
     mapping(uint256 => address) public executors;
 
     /// @notice Subscription source chain (set at initialize) and the
@@ -125,7 +126,7 @@ contract RulesEngine is AbstractReactive {
         emit RuleSet(ruleKey(chainId_, topic0_), chainId_, topic0_, active_, cooldown_);
     }
 
-    /// @notice Реестр исполнителей: цепь-назначение → инстанс на ней.
+    /// @notice The executor registry: destination chain → the instance on it.
     function setExecutor(uint256 destChainId_, address executor_) external onlyOwner noDelegateCall {
         if (executor_ == address(0)) revert ZeroAddress();
         executors[destChainId_] = executor_;
@@ -144,7 +145,7 @@ contract RulesEngine is AbstractReactive {
         emit Subscribed(chainId_, origin_, topic0_);
     }
 
-    /// @notice Destination chain по умолчанию (ADR-EXPANSION §1).
+    /// @notice The default destination chain (ADR-EXPANSION §1).
     function setDestChain(uint256 destChainId_) external onlyOwner noDelegateCall {
         destChainId = destChainId_;
     }
@@ -190,7 +191,7 @@ contract RulesEngine is AbstractReactive {
         rule.lastFiredAt = uint64(block.timestamp);
         address executor = executors[rule.destChainId];
         if (executor == address(0)) {
-            return; // цепь-назначение не подключена — правило молчит
+            return; // destination chain not wired — the rule stays silent
         }
         firedCount += 1;
         emit RuleFired(log_.topic0, log_.chainId, log_.blockNumber);

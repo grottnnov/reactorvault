@@ -1,14 +1,14 @@
 // SPDX-License-License: MIT
 pragma solidity ^0.8.29;
 
-/// @dev Минимальный Aave v3 Pool-срез для USDC-поставки (канон репо:
-///      самодостаточные интерфейсы, без внешних зависимостей).
+/// @dev A minimal Aave v3 Pool slice for USDC supply (repo canon:
+///      self-sufficient interfaces, no external dependencies).
 interface IAavePoolUsdc {
     struct ReserveData {
         uint256 configuration;
         uint128 liquidityIndex;
         uint128 currentLiquidityRate;
-        uint128 variableBorrowIndex; // v3.2 mainnet: 13-е поле (Sepolia-пул старее)
+        uint128 variableBorrowIndex; // v3.2 mainnet: the 13th field (the Sepolia pool is older)
         uint128 currentVariableBorrowRate;
         uint128 currentStableBorrowRate;
         uint40 lastUpdateTimestamp;
@@ -31,13 +31,14 @@ interface IERC20Usdc {
     function scaledBalanceOf(address who) external view returns (uint256);
 }
 
-/// @title AaveUsdcAdapter — USDC ⇄ Aave v3 supply (mainnet-ветка).
-/// @notice Сейф ПУШАЕТ токен (transfer) — адаптер принимает его в баланс
-///         и кладёт в пул; withdraw возвращает ровно amount отправителю
-///         (msg.sender = сейф). Гварды: только сейф (инцидент #19 —
-///         гвард живёт там, где деньги), ETH не принимается.
+/// @title AaveUsdcAdapter — USDC ⇄ Aave v3 supply (mainnet branch).
+/// @notice The safe PUSHES the token (transfer) — the adapter takes it
+///         into its balance and places it into the pool; withdraw returns
+///         exactly amount to the sender (msg.sender = the safe). Guards:
+///         the safe only (incident #19 — the guard lives where the money
+///         is), ETH is not accepted.
 contract AaveUsdcAdapter {
-    /// @notice Единственный адрес, имеющий право supply/withdraw.
+    /// @notice The single address entitled to supply/withdraw.
     address public immutable assetVault;
     IAavePoolUsdc public immutable aavePool;
     IERC20Usdc public immutable usdc;
@@ -69,8 +70,8 @@ contract AaveUsdcAdapter {
     function withdraw(uint256 amount) external returns (bool) {
         if (msg.sender != assetVault) revert NotVault();
         if (amount > principal) revert AbovePrincipal();
-        // Индексное округление: зачисление вниз → баланс юзера может
-        // быть чуть меньше principal; отзываем min(amount, баланс).
+        // Index rounding: the credit rounds down → the user's balance
+        // may be slightly below principal; recall min(amount, balance).
         IAavePoolUsdc.ReserveData memory rd = aavePool.getReserveData(address(usdc));
         uint256 user = (aToken.scaledBalanceOf(address(this)) * uint256(rd.liquidityIndex)) / 1e27;
         uint256 take = amount < user ? amount : user;
@@ -89,7 +90,7 @@ contract AaveUsdcAdapter {
         return aToken.balanceOf(address(this));
     }
 
-    /// @notice Годовая ставка (ray → WAD: 1e27 → 1e18).
+    /// @notice The annual rate (ray → WAD: 1e27 → 1e18).
     function supplyRatePerYear() external view returns (uint256) {
         return uint256(aavePool.getReserveData(address(usdc)).currentLiquidityRate) / 1e9;
     }

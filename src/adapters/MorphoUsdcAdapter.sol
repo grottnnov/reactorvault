@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.29;
 
-/// @dev Минимальный Morpho Blue-срез (как в MorphoPoolAdapter, канон репо).
+/// @dev A minimal Morpho Blue slice (as in MorphoPoolAdapter, repo canon).
 interface IMorphoUsdc {
     struct MarketParams {
         address loanToken;
@@ -56,15 +56,16 @@ interface IERC20M {
     function balanceOf(address who) external view returns (uint256);
 }
 
-/// @title MorphoUsdcAdapter — USDC ⇄ Morpho Blue supply (mainnet-ветка).
-/// @notice Рынок задаётся ПОЛНЫМИ параметрами в конструкторе (сверка
-///         marketId 1:1 с реальным рынком — на деплое); сейф пушит токен,
-///         withdraw возвращает ровно amount отправителю (msg.sender =
-///         сейф). Гвард только-сейф (инцидент #19), ETH не принимается.
+/// @title MorphoUsdcAdapter — USDC ⇄ Morpho Blue supply (mainnet branch).
+/// @notice The market is set by FULL parameters in the constructor (a
+///         marketId 1:1 check against the real market — at deploy); the
+///         safe pushes the token, withdraw returns exactly amount to the
+///         sender (msg.sender = the safe). A safe-only guard (incident
+///         #19), ETH is not accepted.
 contract MorphoUsdcAdapter {
     uint256 private constant WAD = 1e18;
 
-    /// @notice Единственный адрес, имеющий право supply/withdraw.
+    /// @notice The single address entitled to supply/withdraw.
     address public immutable assetVault;
     IMorphoUsdc public immutable morpho;
     address public immutable loanToken;
@@ -96,7 +97,7 @@ contract MorphoUsdcAdapter {
         marketIrm = mp_.irm;
         marketLltv = mp_.lltv;
         irm = IIrmUsdc(irm_);
-        marketId = marketId_; // сверка с keccak(abi.encode(mp_)) — на деплое
+        marketId = marketId_; // check against keccak(abi.encode(mp_)) — at deploy
     }
 
     function marketParams() public view returns (IMorphoUsdc.MarketParams memory) {
@@ -120,17 +121,17 @@ contract MorphoUsdcAdapter {
     function withdraw(uint256 amount) external returns (bool) {
         if (msg.sender != assetVault) revert NotVault();
         if (amount > principal) revert AbovePrincipal();
-        // Живой урок форка 17.11: полный отзыв «по активам» невозможен —
-        // Morpho округляет шары ВВЕРХ (нужно S+1 против наминченных S,
-        // паника 0x11). Поэтому: полный выход — по ШАРАМ позиции,
-        // частичный — по активам. Обе ветки возвращают amount ± пылевой
-        // допуск сейфа (RECALL_DUST).
+        // A live fork lesson 17.11: a full withdrawal "by assets" is
+        // impossible — Morpho rounds shares UP (S+1 needed against the
+        // minted S, panic 0x11). Hence: a full exit — by the position's
+        // SHARES, a partial one — by assets. Both branches return
+        // amount ± the safe's dust tolerance (RECALL_DUST).
         IMorphoUsdc.Market memory m = morpho.market(marketId);
         uint256 shares = morpho.position(marketId, address(this)).supplyShares;
         uint256 assets = (shares * uint256(m.totalSupplyAssets)) / uint256(m.totalSupplyShares);
         uint256 assetsOut;
         if (amount >= assets) {
-            // полный выход: по шарам — ровно вся позиция
+            // a full exit: by shares — exactly the whole position
             (assetsOut,) = morpho.withdraw(marketParams(), 0, shares, address(this), address(this));
             principal = 0;
         } else {
@@ -148,15 +149,15 @@ contract MorphoUsdcAdapter {
         return principal;
     }
 
-    /// @notice Реальная стоимость позиции (растёт с процентами) —
-    ///         для NAV сейфа (доли юзеров).
+    /// @notice The real position value (grows with interest) — for
+    ///         the safe's NAV (users' shares).
     function truePosition() external view returns (uint256) {
         IMorphoUsdc.Market memory m = morpho.market(marketId);
         uint256 shares = morpho.position(marketId, address(this)).supplyShares;
         return (shares * uint256(m.totalSupplyAssets)) / uint256(m.totalSupplyShares);
     }
 
-    /// @notice Годовая ставка предложения: borrowRate × utilization × (1−fee).
+    /// @notice The annual supply rate: borrowRate × utilization × (1−fee).
     function supplyRatePerYear() external view returns (uint256) {
         IMorphoUsdc.Market memory m = morpho.market(marketId);
         if (m.totalBorrowAssets == 0 || m.totalSupplyAssets == 0) return 0;

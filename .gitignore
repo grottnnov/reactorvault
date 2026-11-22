@@ -5,3 +5,7 @@ broadcast/
 docs/buildathon/evidence/secrets*
 sensor-report.txt
 sensor-cron.log
+
+# internal ops tooling (kept locally, out of the public track)
+script/stand-sensor.sh
+script/reactive-mcp-d

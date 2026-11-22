@@ -10,12 +10,12 @@ interface IERC20Meta {
     function balanceOf(address who) external view returns (uint256);
 }
 
-/// @dev Мейн-форк доказательства USDC-адаптеров ДО деплоя (канон
-///      «слабейшее место — деньги-логика без живой обкатки»): НАСТОЯЩИЙ
-///      Aave v3 Pool Ethereum, НАСТОЯЩИЙ Morpho Blue с реальным рынком
-///      USDC/WETH 91.5%. Скипается без MAINNET_RPC.
-///      Адреса mainnet (ethereum-lists + доки Aave/Morpho, сверяются
-///      живьём symbol()/market() ниже — канон live-check).
+/// @dev Mainnet fork proof of the USDC adapters BEFORE deploy (canon:
+///      "the weakest spot is money logic without a live shakeout"):
+///      the REAL Aave v3 Pool on Ethereum, the REAL Morpho Blue with
+///      the live USDC/WETH 91.5% market. Skips without MAINNET_RPC.
+///      Mainnet addresses (ethereum-lists + Aave/Morpho docs, verified
+///      live via symbol()/market() below — the live-check canon).
 contract UsdcAdaptersForkTest is Test {
     string rpc = vm.envOr("MAINNET_RPC", string(""));
 
@@ -23,9 +23,9 @@ contract UsdcAdaptersForkTest is Test {
     address constant MORPHO = 0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb;
     address constant USDC = 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48;
     address constant WETH = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
-    /// Chainlink USDC/ETH (дока Morpho: рынок USDC/WETH LLTV 91.5%).
+    /// Chainlink USDC/ETH (Morpho docs: the USDC/WETH market, LLTV 91.5%).
     address constant ORACLE_USDC_ETH = 0xdC6fd5831277c693b1054e19E94047cB37c77615;
-    /// AdaptiveCurveIRM mainnet (не путать с Sepolia-адресом!).
+    /// AdaptiveCurveIRM mainnet (do not confuse with the Sepolia address!).
     address constant IRM_MAINNET = 0x870aC11D48B15DB9a138Cf899d20F13F79Ba00BC;
     uint256 constant LLTV = 0.86e18;
 
@@ -42,26 +42,26 @@ contract UsdcAdaptersForkTest is Test {
         if (bytes(rpc).length == 0) vm.skip(true);
         vm.createSelectFork(rpc);
 
-        // live-check канона: адрес без вопроса цепи — не адрес
+        // the canon live-check: an address without the chain question is not an address
         assertEq(IERC20Meta(USDC).symbol(), "USDC", "live check: USDC");
         assertEq(IERC20Meta(WETH).symbol(), "WETH", "live check: WETH");
     }
 
-    /// Рынок USDC/WETH 91.5% существует на синглтоне и живой.
+    /// The USDC/WETH 91.5% market exists on the singleton and is alive.
     function testForkMorphoUsdcMarketExists() public view {
         bytes32 id = keccak256(abi.encode(_mp()));
         IMorphoUsdc.Market memory m = IMorphoUsdc(MORPHO).market(id);
         assertGt(m.lastUpdate, 0, "USDC/WETH 86% market must exist on mainnet");
     }
 
-    /// Полный цикл Aave: сейф пушит 100 USDC → адаптер кладёт →
-    /// withdraw возвращает ровно столько же сейфу.
+    /// Full Aave cycle: the safe pushes 100 USDC → the adapter deposits →
+    /// withdraw returns exactly the same amount to the safe.
     function testForkAaveUsdcCycle() public {
         AaveUsdcAdapter adapter = new AaveUsdcAdapter(vault, AAVE_POOL, USDC);
         uint256 amount = 100e6; // 100 USDC
 
         deal(USDC, vault, amount, true);
-        // push: сейф переводит адаптеру (мокируем поведение сейфа)
+        // push: the safe transfers to the adapter (mocking the safe's behavior)
         vm.prank(vault);
         (bool ok,) = USDC.call(abi.encodeWithSignature("transfer(address,uint256)", address(adapter), amount));
         require(ok, "push failed");
@@ -73,13 +73,13 @@ contract UsdcAdaptersForkTest is Test {
 
         vm.prank(vault);
         adapter.withdraw(amount);
-        // индексное округление: остаток ≤ пылевого допуска сейфа (0.01 USDC)
+        // index rounding: the remainder ≤ the safe's dust tolerance (0.01 USDC)
         assertLe(adapter.totalSupplied(), 10_000, "dust only remains");
         uint256 back = IERC20Meta(USDC).balanceOf(vault);
         assertLe(amount - back, 10_000, "settled back within dust");
     }
 
-    /// Гвард #19: чужак не может ни положить, ни забрать.
+    /// Guard #19: a stranger can neither deposit nor withdraw.
     function testForkAaveUsdcOnlyVault() public {
         AaveUsdcAdapter adapter = new AaveUsdcAdapter(vault, AAVE_POOL, USDC);
         vm.prank(attacker);
@@ -90,9 +90,9 @@ contract UsdcAdaptersForkTest is Test {
         adapter.withdraw(1);
     }
 
-    /// Полный цикл Morpho (настоящий рынок): пуш → supply → withdraw →
-    /// точный расчёт. NOTE: при высокой утилизации выход ликвидность-
-    /// ограничен — на живом рынке USDC/WETH 100 USDC выходят свободно.
+    /// Full Morpho cycle (a real market): push → supply → withdraw →
+    /// exact settlement. NOTE: at high utilization the exit is
+    /// liquidity-limited — on the live USDC/WETH market 100 USDC exits freely.
     function testForkMorphoUsdcCycle() public {
         bytes32 id = keccak256(abi.encode(_mp()));
         MorphoUsdcAdapter adapter = new MorphoUsdcAdapter(vault, MORPHO, _mp(), IRM_MAINNET, id);
@@ -112,10 +112,10 @@ contract UsdcAdaptersForkTest is Test {
         assertLe(adapter.totalSupplied(), 10_000, "dust only remains");
         uint256 back = IERC20Meta(USDC).balanceOf(vault);
         assertLe(amount - back, 10_000, "settled back within dust");
-        assertGe(adapter.supplyRatePerYear(), 0); // вид читается; >0 при займах
+        assertGe(adapter.supplyRatePerYear(), 0); // the view reads; >0 with borrows
     }
 
-    /// Гвард #19 для Morpho.
+    /// Guard #19 for Morpho.
     function testForkMorphoUsdcOnlyVault() public {
         bytes32 id = keccak256(abi.encode(_mp()));
         MorphoUsdcAdapter adapter = new MorphoUsdcAdapter(vault, MORPHO, _mp(), IRM_MAINNET, id);

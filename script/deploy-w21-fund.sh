@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
-# deploy-w21-fund.sh — передеплой надзорной обвязки (ADR-EXPANSION):
-# склад(Fund v6, конструктор 7 аргументов) → сторож(v6, ПРАВИЛЬНЫЙ ПУТЬ
-# src/Watchdog.sol — баг 09.11: деплойнулся корневой legacy-сторож
-# с гвардом "VM only", ревертящий все омни-доставки) → конвертер →
-# покупщик. У всех — партнёрские люки (сеттеры).
+# deploy-w21-fund.sh — redeploy the supervision wrap (ADR-EXPANSION):
+# depot (Fund v6, a 7-argument constructor) → watchdog (v6, the RIGHT
+# PATH src/Watchdog.sol — the 09.11 bug: the root legacy watchdog got
+# deployed with a "VM only" guard, reverting every omni delivery) →
+# converter → buyer. All of them have partner hatches (setters).
 #
-# Позитив-сверки после каждого деплоя (сеньор-урок: негатив-строки врут,
-# геттеры доказывают): cron-топик сторожа, адрес склада, связки.
+# Positive checks after each deploy (a senior lesson: negative strings
+# lie, getters prove): the watchdog's cron topic, the depot address,
+# the links.
 #
-# Газ: БЕЗ капа (урок OOG). Environment: DEPLOYER_PRIVATE_KEY,
-# .env (адреса семьи W2_RULES/W2_GASPAYER).
+# Gas: NO cap (the OOG lesson). Environment: DEPLOYER_PRIVATE_KEY,
+# .env (the W2_RULES/W2_GASPAYER family addresses).
 set -uo pipefail
 export PATH="$PATH:${HOME:-/root}/.foundry/bin"
 cd "$(dirname "$0")/.."
@@ -47,25 +48,25 @@ chkL()  { local got; got=$(cast call "$1" "$2" --rpc-url "$RPC_LASNA" 2>/dev/nul
           got=$(python3 -c "print('$got'.lower().strip('[]'))"); local want=$(python3 -c "print('$3'.lower())"); \
           [ "$got" = "$want" ] && echo "  ✅ posit: $2" || { echo "❌ posit: $2 → '$got' ≠ '$want' — STOP"; exit 1; }; }
 
-echo "== [0] precompute A@Lasna: склад N, сторож N+1, конвертер N+2"
+echo "== [0] precompute A@Lasna: depot N, watchdog N+1, converter N+2"
 N=$(cast nonce "$A" --rpc-url "$RPC_LASNA")
 FUND21=$(pre "$N");      echo "  fund      N   = $FUND21"
 DOG21=$(pre "$((N+1))"); echo "  dog       N+1 = $DOG21"
 CONV21=$(pre "$((N+2))");echo "  converter N+2 = $CONV21"
 
-echo "== [1] Sepolia: покупщик (конвертер=precompute, склад=precompute)"
+echo "== [1] Sepolia: buyer (converter=precompute, depot=precompute)"
 BUYER21=$(depS "FuelConverter.sol:FuelBuyer" "$PROXY $CONV21 $FUND21")
 [ -n "$BUYER21" ] || { echo "❌ buyer deploy failed"; exit 1; }
 echo "  ✅ buyer = $BUYER21"
 
-echo "== [2] Lasna: склад → сторож(v6, правильный путь) → конвертер"
-# Fund v6 (ADR-EXPANSION: 7 аргументов — dogRvm упразднён, гвард по dogContract)
+echo "== [2] Lasna: depot → watchdog (v6, the right path) → converter"
+# Fund v6 (ADR-EXPANSION: 7 arguments — dogRvm abolished, the guard is by dogContract)
 F=$(depW "ReliefFund.sol:ReliefFund" "$A $OMNI 0x0000000000000000000000000000000000000000 $OMNI $DOG21 $FUND21 $FUND21")
 mustBe "$F" "$FUND21" "fund"
 D=$(depW "Watchdog.sol:Watchdog" "$CHAIN $WATCHER_SILENCE_WINDOW $FUND21 $FUND21 $FUND21 $T_CRON10000 $T_BLACKLIST $T_MAILBOX_ALERT $T_DOG_FED $T_WATCHER_LOW $T_LOW_FUND")
 mustBe "$D" "$DOG21" "dog (v6 path)"
 
-echo "== [3] позитив-сверки (урок 09.11: в байт-коде должен быть ОЖИДАЕМЫЙ контракт)"
+echo "== [3] positive checks (the 09.11 lesson: the bytecode must hold the EXPECTED contract)"
 CRON_DEC=$(python3 -c "print(int('$T_CRON10000',16))")
 chkL "$DOG21" 'cron10000Topic()(uint256)' "$CRON_DEC"
 chkL "$DOG21" 'reliefFund()(address)' "$FUND21"
@@ -76,7 +77,7 @@ mustBe "$C" "$CONV21" "converter"
 chkL "$CONV21" 'fund()(address)' "$FUND21"
 chkL "$CONV21" 'buyer()(address)' "$BUYER21"
 
-echo "== [4] wiring: подписки, реестр, политики"
+echo "== [4] wiring: subscriptions, registry, policies"
 send "$DOG21" 'init()'
 send "$DOG21" 'subscribeWardCry(address)' "$W2_RULES"
 send "$DOG21" 'subscribeWardCry(address)' "$W2_GASPAYER"
@@ -90,7 +91,7 @@ send "$FUND21" 'addWard(address,uint256,uint256)' "$W2_GASPAYER" 0.1ether 0.2eth
 send "$FUND21" 'addWard(address,uint256,uint256)' "$CONV21" 0.05ether 0.1ether
 if [ -n "${W2_CONVERTER:-}" ]; then send "$FUND21" 'removeWard(address)' "$W2_CONVERTER"; fi
 
-echo "== [5] баки (depositTo на SYSTEM) + покупщик"
+echo "== [5] tanks (depositTo on SYSTEM) + buyer"
 send "$OMNI" 'depositTo(address)' "$DOG21" --value 0.15ether
 send "$OMNI" 'depositTo(address)' "$CONV21" --value 0.1ether
 send "$OMNI" 'depositTo(address)' "$FUND21" --value 0.15ether
@@ -98,9 +99,9 @@ send "$FUND21" --value 0.6ether
 sendS "$BUYER21" 'setFaucet(address)' "$FAUCET"
 sendS "$BUYER21" --value 0.02ether
 
-echo "== [6] .env: старое → *_OLD, новое на место"
+echo "== [6] .env: old → *_OLD, new in place"
 upsert() { if grep -q "^$1=" .env 2>/dev/null; then sed -i "s|^$1=.*|$1=$2|" .env; else printf '%s=%s\n' "$1" "$2" >> .env; fi; }
 sv() { local v; v=$(grep -oP "^$1=\K.*" .env 2>/dev/null); [ -n "$v" ] && upsert "$1_OLD" "$v"; return 0; }
 sv W2_FUND; sv W2_DOG; sv W2_CONVERTER; sv W2_BUYER
 upsert W2_FUND "$FUND21"; upsert W2_DOG "$DOG21"; upsert W2_CONVERTER "$CONV21"; upsert W2_BUYER "$BUYER21"
-echo "done. next: живой крон-тик ≈ на границе 8020000; проверить fedCount/HorizonAlert/конвертер"
+echo "done. next: a live cron tick ≈ at the 8020000 boundary; check fedCount/HorizonAlert/converter"

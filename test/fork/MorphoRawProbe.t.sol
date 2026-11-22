@@ -9,9 +9,9 @@ interface IERC20Raw {
     function balanceOf(address) external view returns (uint256);
 }
 
-/// @dev Изоляция паники withdraw: сырой EOA против настоящего Morpho —
-///      без нашего адаптера. Если падает и здесь — проблема в рынке/форке,
-///      если нет — в адаптере.
+/// @dev Isolating the withdraw panic: a raw EOA against the real
+///      Morpho — without our adapter. If it fails here too, the
+///      problem is the market/fork; if not, it is in the adapter.
 contract MorphoRawProbeTest is Test {
     string rpc = vm.envOr("MAINNET_RPC", string(""));
 
@@ -33,9 +33,9 @@ contract MorphoRawProbeTest is Test {
         vm.createSelectFork(rpc);
     }
 
-    /// Живой урок 17.11, закреплён зондом: полный отзыв «по активам»
-    /// падает паникой (Morpho округляет шары вверх: нужно S+1 против S);
-    /// полный выход — только «по шарам».
+    /// Live lesson 17.11, pinned by this probe: a full withdrawal "by
+    /// assets" panics (Morpho rounds shares up: it needs S+1 vs S);
+    /// a full exit is possible only "by shares".
     function testRawFullExitBySharesNotAssets() public {
         bytes32 id = keccak256(abi.encode(_mp()));
         deal(USDC, eoa, 200e6, true);
@@ -45,7 +45,7 @@ contract MorphoRawProbeTest is Test {
         uint256 shares = IMorphoUsdc(MORPHO).position(id, eoa).supplyShares;
         assertGt(shares, 0, "supplied");
 
-        vm.expectRevert(); // паника 0x11: по-активам нельзя выйти целиком
+        vm.expectRevert(); // panic 0x11: a by-assets exit cannot be complete
         IMorphoUsdc(MORPHO).withdraw(_mp(), 100e6, 0, eoa, eoa);
 
         (uint256 out,) = IMorphoUsdc(MORPHO).withdraw(_mp(), 0, shares, eoa, eoa);

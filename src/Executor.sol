@@ -14,8 +14,8 @@ import {IPayable} from "reactive-lib-omni/interfaces/IPayable.sol";
 ///         the AssetVault, fuel through the GasVault — one battery for
 ///         every asset and chain. Per-chain instances on expansion
 ///         (same code, new deploy; ADR-EXPANSION §3).
-/// @dev Срез сейфа для мульти-активного исполнителя: обе ветки (ETH
-///      AssetVault и Erc20AssetVault) удовлетворяют этому интерфейсу.
+/// @dev A vault slice for the multi-asset executor: both branches (ETH
+///      AssetVault and Erc20AssetVault) satisfy this interface.
 interface IExecutorVault {
     function rebalanceTarget() external view returns (uint256);
     function deployToPool(address adapter, uint256 amount) external;
@@ -26,10 +26,10 @@ interface IExecutorVault {
 }
 
 contract Executor is AbstractCallback {
-    /// @notice Партнёры сменяемы owner'ом; гварды отправителей
-    ///         (мозг/кассир) — immutable намеренно.
-    ///         v3: РЕЕСТР сейфов — конструкторский сейф первый в списке,
-    ///         addVault/removeVault управляют остальными (мульти-актив).
+    /// @notice Partners are replaceable by the owner; the sender guards
+    ///         (brain/cashier) are immutable on purpose.
+    ///         v3: a REGISTRY of safes — the constructor's safe is first
+    ///         in the list, addVault/removeVault manage the rest (multi-asset).
     IExecutorVault[] public vaults;
     mapping(address => bool) public isVault;
     IGasVault public gasVault;
@@ -106,10 +106,10 @@ contract Executor is AbstractCallback {
         return vaults.length;
     }
 
-    /// @notice Мульти-актив: добавить сейф (со своими адаптерами пулов).
+    /// @notice Multi-asset: add a safe (with its own pool adapters).
     function addVault(IExecutorVault vault_) external onlyOwner noDelegateCall {
         if (address(vault_) == address(0)) revert ZeroAddress();
-        if (isVault[address(vault_)]) revert ZeroAddress(); // уже есть
+        if (isVault[address(vault_)]) revert ZeroAddress(); // already present
         isVault[address(vault_)] = true;
         vaults.push(vault_);
         emit VaultAdded(address(vault_));
@@ -129,7 +129,7 @@ contract Executor is AbstractCallback {
         emit VaultRemoved(address(vault_));
     }
 
-    /// @notice Смена батареи (газ — общий на цепь).
+    /// @notice Battery replacement (gas is shared per chain).
     function setGasVault(IGasVault gasVault_) external onlyOwner noDelegateCall {
         if (address(gasVault_) == address(0)) revert ZeroAddress();
         gasVault = gasVault_;
@@ -165,8 +165,8 @@ contract Executor is AbstractCallback {
         _checkEth();
     }
 
-    /// @dev Мульти-актив: каждый сейф ребалансируется независимо —
-    ///      лучший/худший пул считается по ЕГО адаптерам.
+    /// @dev Multi-asset: every safe is rebalanced independently — the
+    ///      best/worst pool is computed by ITS own adapters.
     function _placeCapital() private returns (uint256 moved) {
         uint256 len = vaults.length;
         for (uint256 v = 0; v < len; v++) {
@@ -174,7 +174,7 @@ contract Executor is AbstractCallback {
             uint256 n = vault.poolAdapterCount();
             if (n < 2) {
                 if (n == 1) {
-                    // единственный пул: просто размещаем свободное
+                    // a single pool: simply place the free capital
                     uint256 freeSolo = vault.rebalanceTarget();
                     if (freeSolo > 0) {
                         vault.deployToPool(vault.poolAdapters(0), freeSolo);
@@ -196,7 +196,7 @@ contract Executor is AbstractCallback {
                 address a = vault.poolAdapters(i);
                 uint256 r = IPoolAdapter(a).supplyRatePerYear();
                 if (r > bestRate) {
-                    // ничья — остаётся ранний пул (tie→poolA)
+                    // a tie — the early pool stays (tie→poolA)
                     bestRate = r;
                     best = a;
                 }

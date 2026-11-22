@@ -1,49 +1,50 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.29;
 
-/// @dev Минимальный ERC-20-срез (канон репо: без внешних зависимостей;
-///      настоящий USDC в этот срез укладывается, включая bool-возвраты).
+/// @dev A minimal ERC-20 slice (repo canon: no external dependencies;
+///      real USDC fits into this slice, including bool returns).
 interface IERC20Asset {
     function transfer(address to, uint256 value) external returns (bool);
     function transferFrom(address from, address to, uint256 value) external returns (bool);
     function balanceOf(address who) external view returns (uint256);
 }
 
-/// @title Erc20AssetVault — сейф ERC-20 актива (ветка USDC).
-/// @notice ADR-EXPANSION: «новый актив = новый экземпляр, а не перепись
-///         старого». ETH-сейф живёт своей жизнью; этот принимает USDC
-///         через transferFrom, казначейская доля копится ВНУТРИ (в USDC,
-///         люк вывода — веха G15), рабочий капитал пушится в адаптеры
-///         пулов и возвращается строгими расчётами. Инвариант:
+/// @title Erc20AssetVault — the ERC-20 asset safe (USDC branch).
+/// @notice ADR-EXPANSION: "a new asset = a new instance, not a rewrite
+///         of the old one". The ETH safe lives its own life; this one
+///         takes USDC via transferFrom, the treasury share accrues
+///         INSIDE (in USDC, the withdrawal hatch is milestone G15),
+///         working capital is pushed into pool adapters and returned
+///         by strict settlement. Invariant:
 ///         tokenBalance + totalInPools + treasuryWithdrawn ≡ totalDeposited
-///         (казна не вычитается — она остаётся в балансе сейфа).
-///         P5: withdrawAll — MVP-скаффолдинг (per-user учёт — G15).
-///         P10: noDelegateCall на каждой точке входа. Эфир не принимается:
-///         контракт не payable.
+///         (the treasury is not subtracted — it stays in the safe's balance).
+///         P5: withdrawAll is MVP scaffolding (per-user accounting — G15).
+///         P10: noDelegateCall on every entry point. Ether is not
+///         accepted: the contract is not payable.
 contract Erc20AssetVault {
     IERC20Asset public immutable token;
     address public owner;
     address public executor;
 
-    /// @notice Казначейская доля каждого депозита, bps (≤ 10_000).
+    /// @notice Treasury share of every deposit, bps (≤ 10_000).
     uint32 public treasuryBps;
 
     uint256 public totalDeposited;
-    /// @notice Забронированная казна (в токене, лежит в балансе сейфа).
+    /// @notice Reserved treasury (in the token, sits in the safe's balance).
     uint256 public treasuryTaken;
 
     /// ------------------------------------------------- ERC-4626-lite (17.11)
-    /// @notice Учёт долей юзеров (ADR-MULTI-ASSET-CHAINS): депозит
-    ///         минтит доли, redeem гасит; NAV = свободные (минус казна)
-    ///         + РЕАЛЬНЫЕ позиции пулов (растут с процентами).
-    ///         Защита от донат-инфляции первого депозита: виртуальный
-    ///         офсет VIRTUAL_UNITS в обеих частях пропорции (Solmate-
-    ///         паттерн); округления всегда в пользу сейфа.
+    /// @notice User share accounting (ADR-MULTI-ASSET-CHAINS): a deposit
+    ///         mints shares, a redeem burns them; NAV = free (minus
+    ///         treasury) + REAL pool positions (they grow with interest).
+    ///         Protection against first-deposit donation inflation: the
+    ///         virtual VIRTUAL_UNITS offset in both parts of the ratio
+    ///         (Solmate pattern); rounding always in the safe's favor.
     uint256 public totalShares;
     mapping(address => uint256) public shareOf;
 
-    /// @dev Офсет против атаки первого депозита: при пустом сейфе
-    ///      1 юнит актива ≠ гигантская доля; красный тест прилагается.
+    /// @dev Offset against the first-deposit attack: in an empty safe
+    ///      1 unit of the asset ≠ a giant share; a red test is attached.
     uint256 internal constant VIRTUAL_UNITS = 1_000_000;
 
     event VaultDeposit(address indexed sender, address indexed owner, uint256 assets, uint256 shares);
@@ -55,13 +56,13 @@ contract Erc20AssetVault {
     mapping(address => bool) public isPoolAdapter;
     mapping(address => uint256) public inPoolOf;
 
-    /// @dev P10: immutable pin реального кода.
+    /// @dev P10: an immutable pin of the real code.
     address private immutable _original;
 
-    /// @dev CEI-гвард расчётов: внешние вызовы адаптеров идут до
-    ///      записи состояния — реентрансия из адаптера запрещена
-    ///      (Slither reentrancy-balance High, 17.11; злой адаптер —
-    ///      владелец реестра, но глубина всё равно заперта).
+    /// @dev CEI guard of settlement: external adapter calls go before
+    ///      the state write — reentrancy from an adapter is forbidden
+    ///      (Slither reentrancy-balance High, 17.11; a malicious adapter
+    ///      is the registry owner's pick, but the depth is locked anyway).
     bool private _recalling;
 
     event Deposited(address indexed user, uint256 amount, uint256 toTreasury);
@@ -132,22 +133,23 @@ contract Erc20AssetVault {
         emit PoolAdapterAuthorized(adapter_);
     }
 
-    /// @notice Количество авторизованных адаптеров (для итерации
-    ///         исполнителем мульти-активного реестра).
+    /// @notice The number of authorized adapters (for the executor's
+    ///         iteration over the multi-asset registry).
     function poolAdapterCount() external view returns (uint256) {
         return poolAdapters.length;
     }
 
-    /// @notice Депозит: юзер даёт approve, сейф забирает токен,
-    ///         минтит доли. Казна: fee-on-mint — комиссию платит
-    ///         ВХОДЯЩИЙ (доли минтятся на активы-минус-казна; старые
-    ///         держатели не платят за чужой вход — модель OZ fee-vault).
+    /// @notice Deposit: the user gives approve, the safe pulls the
+    ///         token, mints shares. Treasury: fee-on-mint — the INCOMING
+    ///         user pays the fee (shares are minted on assets-minus-treasury;
+    ///         old holders do not pay for someone else's entry — the OZ
+    ///         fee-vault model).
     function deposit(uint256 amount_) external noDelegateCall notRecalling {
         if (amount_ == 0) revert ZeroAmount();
         uint256 toTreasury = amount_ * treasuryBps / 10_000;
         uint256 working = amount_ - toTreasury;
         uint256 shares = _convertToShares(working);
-        if (shares == 0) revert ZeroAmount(); // пыль не минтит долей
+        if (shares == 0) revert ZeroAmount(); // dust mints no shares
         totalShares += shares;
         shareOf[msg.sender] += shares;
         totalDeposited += working;
@@ -159,11 +161,12 @@ contract Erc20AssetVault {
         _safeTransferFrom(msg.sender, address(this), amount_);
     }
 
-    /// @notice Юзерские активы целиком: свободные ПО LEDGER (рабочие
-    ///         депозиты − в пулах; казна fee-on-mint в ledger НЕ входит)
-    ///         + реальные позиции пулов (с процентами). Прямой донат
-    ///         токена на сейф в NAV НЕ попадает — донат-атака первого
-    ///         депозита мертва и для больших сумм, не только в офсете.
+    /// @notice User assets in full: the BY-LEDGER free part (working
+    ///         deposits − in pools; the fee-on-mint treasury is NOT in
+    ///         the ledger) + real pool positions (with interest). A direct
+    ///         token donation to the safe does NOT enter NAV — the
+    ///         first-deposit donation attack is dead for large amounts
+    ///         too, not only within the offset.
     function totalAssets() public view returns (uint256) {
         uint256 free = totalDeposited - totalInPools();
         uint256 len = poolAdapters.length;
@@ -177,8 +180,8 @@ contract Erc20AssetVault {
         return free + invested;
     }
 
-    /// @dev Свободный юзерский капитал по ledger: рабочие депозиты −
-    ///      в пулах (казна и донаты физически лежат, но не юзерские).
+    /// @dev Free user capital by ledger: working deposits − in pools
+    ///      (the treasury and donations sit there physically, but are not the user's).
     function _ledgerFree() internal view returns (uint256) {
         return totalDeposited - totalInPools();
     }
@@ -199,8 +202,8 @@ contract Erc20AssetVault {
         return _convertToAssets(shares_);
     }
 
-    /// @notice Выход юзера: гасит доли, при нехватке свободных — сам
-    ///         отзывает из пулов. «Выход, который работает всегда».
+    /// @notice User exit: burns shares, recalls from pools itself when
+    ///         free capital is short. "An exit that always works".
     function redeem(uint256 shares_) external noDelegateCall notRecalling {
         if (shares_ == 0) revert ZeroAmount();
         if (shareOf[msg.sender] < shares_) revert InsufficientShares();
@@ -222,19 +225,20 @@ contract Erc20AssetVault {
         }
         totalShares -= shares_;
         shareOf[msg.sender] -= shares_;
-        totalDeposited -= assets; // выведенное покидает ledger — NAV не раздувается
+        totalDeposited -= assets; // the withdrawn leaves the ledger — NAV does not inflate
         emit VaultRedeem(msg.sender, msg.sender, msg.sender, assets, shares_);
         _safeTransfer(msg.sender, assets);
     }
 
-    /// @notice Свободный рабочий капитал по ledger: депозиты − казна −
-    ///         в пулах (казна недоступна пулам; донаты не рабочие).
+    /// @notice Free working capital by ledger: deposits − treasury −
+    ///         in pools (the treasury is inaccessible to pools; donations
+    ///         are not working capital).
     function rebalanceTarget() external view returns (uint256 amount) {
         amount = _ledgerFree();
     }
 
-    /// @notice Пуш-модель: сейф сам передаёт токен адаптеру (никаких
-    ///         approve-сарайников). Эффекты до внешнего вызова.
+    /// @notice Push model: the safe itself transfers the token to the
+    ///         adapter (no approve shacks). Effects before the external call.
     function deployToPool(address adapter_, uint256 amount_) external onlyExecutor noDelegateCall notRecalling {
         if (!isPoolAdapter[adapter_]) revert AdapterUnknown();
         if (amount_ == 0) revert ZeroAmount();
@@ -244,17 +248,18 @@ contract Erc20AssetVault {
         _safeTransfer(adapter_, amount_);
     }
 
-    /// @notice Строгий расчёт с пылевым допуском: пулы с процентным
-    ///         индексом (Aave liquidityIndex, Morpho shares) округляют
-    ///         зачисление вниз — отзыв ровно principal невозможен.
-    ///         Допуск 0.01 USDC покрывает округление с запасом ×1000
-    ///         (замер форка 17.11: разрыв ~11 единиц на 100 USDC при
-    ///         индексе 1.19); учёт списывает ФАКТИЧЕСКИ вернутое.
+    /// @notice Strict settlement with a dust tolerance: pools with an
+    ///         interest index (Aave liquidityIndex, Morpho shares) round
+    ///         the credit down — recalling exactly the principal is
+    ///         impossible. The 0.01 USDC tolerance covers the rounding
+    ///         with a ×1000 margin (fork measurement 17.11: a gap of ~11
+    ///         units per 100 USDC at index 1.19); accounting debits what
+    ///         was ACTUALLY returned.
     uint256 public constant RECALL_DUST = 10_000;
 
-    /// @notice Строгой фиксации отзыв: адаптер обязан вернуть amount
-    ///         ± RECALL_DUST токена в рамках вызова — иначе весь отзыв
-    ///         откатывается.
+    /// @notice Strict-settlement recall: the adapter must return amount
+    ///         ± RECALL_DUST of the token within the call — otherwise
+    ///         the whole recall reverts.
     function recallFromPool(address adapter_, uint256 amount_) external noDelegateCall {
         if (!isPoolAdapter[adapter_]) revert AdapterUnknown();
         if (amount_ == 0) revert ZeroAmount();
@@ -271,7 +276,7 @@ contract Erc20AssetVault {
         inPoolOf[adapter_] -= back;
     }
 
-    /// @notice Σ по авторизованным адаптерам.
+    /// @notice Σ inPoolOf across authorized adapters.
     function totalInPools() public view returns (uint256 total) {
         uint256 len = poolAdapters.length;
         for (uint256 i = 0; i < len; i++) {
@@ -279,8 +284,9 @@ contract Erc20AssetVault {
         }
     }
 
-    /// @notice MVP-скаффолдинг: полный возврат владельцу (сначала отзыв
-    ///         всех пулов). Казна уходит вместе с рабочим капиталом.
+    /// @notice MVP scaffolding: a full return to the owner (all pools
+    ///         recalled first). The treasury leaves together with the
+    ///         working capital.
     function withdrawAll() external onlyOwner noDelegateCall notRecalling {
         uint256 len = poolAdapters.length;
         for (uint256 i = 0; i < len; i++) {
@@ -309,8 +315,8 @@ contract Erc20AssetVault {
         inPoolOf[adapter_] -= back;
     }
 
-    /// @dev Безопасные вызовы токена: пузырь реверта + проверка возврата
-    ///      для нестандартных (USDC возвращает bool).
+    /// @dev Safe token calls: revert bubbling + a return check for
+    ///      non-standard ones (USDC returns bool).
     function _safeTransfer(address to, uint256 value) private {
         (bool ok, bytes memory ret) =
             address(token).call(abi.encodeWithSignature("transfer(address,uint256)", to, value));

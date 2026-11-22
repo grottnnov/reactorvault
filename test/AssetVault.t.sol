@@ -46,8 +46,8 @@ contract AssetVaultTest is Test {
         vault.setTreasuryBps(500); // 5%
         _deposit(1 ether);
 
-        // fee-on-mint (17.11): totalDeposited считает РАБОЧИЙ капитал;
-        // казна уехала в батарею, доли наминчены на 0.95
+        // fee-on-mint (17.11): totalDeposited counts WORKING capital;
+        // the treasury has left for the battery, shares are minted for 0.95
         assertEq(vault.totalDeposited(), 0.95 ether);
         assertEq(vault.treasurySent(), 0.05 ether);
         assertEq(address(vault).balance, 0.95 ether, "free = value - treasury");
@@ -61,7 +61,7 @@ contract AssetVaultTest is Test {
         );
     }
 
-    /// Доли: первый депозит при пустом сейфе — доли = рабочие активы.
+    /// Shares: the first deposit into an empty safe — shares = working assets.
     function testSharesFirstDepositProportional() public {
         _deposit(1 ether);
         assertEq(vault.totalShares(), 1 ether);
@@ -69,7 +69,7 @@ contract AssetVaultTest is Test {
         assertEq(vault.totalAssets(), 1 ether, "NAV == assets");
     }
 
-    /// redeem отзывает из пулов при нехватке свободных — выход всегда.
+    /// redeem recalls from pools when free capital is short — the exit always works.
     function testRedeemRecallsFromPools() public {
         _deposit(1 ether);
         MockPool mp = _adapter();
@@ -151,8 +151,8 @@ contract AssetVaultTest is Test {
     // ---------------------------------------------------------------
 
     function _invariant(string memory where) internal view {
-        // working-семантика: balance + inPools ≡ totalDeposited (рабочие);
-        // казна (treasurySent) уехала в батарею и в ledger не входит
+        // Working semantics: balance + inPools ≡ totalDeposited (working);
+        // the treasury (treasurySent) has left for the battery and is not in the ledger
         assertEq(
             address(vault).balance + vault.totalInPools(), vault.totalDeposited(), string.concat("invariant: ", where)
         );
