@@ -54,7 +54,11 @@ contract AssetVaultTest is Test {
         assertEq(battery.treasury(), 0.05 ether, "share in the battery");
         assertEq(vault.rebalanceTarget(), 0.95 ether);
         assertEq(vault.totalShares(), 0.95 ether, "shares for working assets");
-        assertEq(address(vault).balance + vault.treasurySent(), vault.totalDeposited() + 0.05 ether, "physical == working + sent");
+        assertEq(
+            address(vault).balance + vault.treasurySent(),
+            vault.totalDeposited() + 0.05 ether,
+            "physical == working + sent"
+        );
     }
 
     /// Доли: первый депозит при пустом сейфе — доли = рабочие активы.
@@ -150,9 +154,7 @@ contract AssetVaultTest is Test {
         // working-семантика: balance + inPools ≡ totalDeposited (рабочие);
         // казна (treasurySent) уехала в батарею и в ledger не входит
         assertEq(
-            address(vault).balance + vault.totalInPools(),
-            vault.totalDeposited(),
-            string.concat("invariant: ", where)
+            address(vault).balance + vault.totalInPools(), vault.totalDeposited(), string.concat("invariant: ", where)
         );
     }
 

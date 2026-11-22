@@ -223,7 +223,9 @@ contract FuelConverter is AbstractReactive {
         uint256 fundedTopic_,
         address faucetRvm_
     ) {
-        if (fund_ == address(0) || buyer_ == address(0) || faucetRvm_ == address(0)) revert ZeroAddress();
+        if (fund_ == address(0) || buyer_ == address(0) || faucetRvm_ == address(0)) {
+            revert ZeroAddress();
+        }
         SRC_CHAIN_ID = srcChainId_;
         DEST_CHAIN_ID = destChainId_;
         owner = msg.sender;

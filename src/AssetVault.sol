@@ -51,7 +51,9 @@ contract AssetVault is IAssetVault {
     uint256 internal constant VIRTUAL_UNITS = 1e12; // 1 μETH
 
     event VaultDeposit(address indexed sender, address indexed owner, uint256 assets, uint256 shares);
-    event VaultRedeem(address indexed sender, address indexed receiver, address indexed owner, uint256 assets, uint256 shares);
+    event VaultRedeem(
+        address indexed sender, address indexed receiver, address indexed owner, uint256 assets, uint256 shares
+    );
 
     /// @notice Authorized pool adapters and per-adapter deployed capital.
     address[] public poolAdapters;
@@ -213,8 +215,7 @@ contract AssetVault is IAssetVault {
         uint256 invested;
         uint256 len = poolAdapters.length;
         for (uint256 i = 0; i < len; i++) {
-            (bool ok, bytes memory ret) =
-                poolAdapters[i].staticcall(abi.encodeWithSignature("truePosition()"));
+            (bool ok, bytes memory ret) = poolAdapters[i].staticcall(abi.encodeWithSignature("truePosition()"));
             if (ok && ret.length >= 32) {
                 invested += abi.decode(ret, (uint256));
             }

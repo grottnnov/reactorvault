@@ -195,7 +195,8 @@ contract Executor is AbstractCallback {
             for (uint256 i = 1; i < n; i++) {
                 address a = vault.poolAdapters(i);
                 uint256 r = IPoolAdapter(a).supplyRatePerYear();
-                if (r > bestRate) { // ничья — остаётся ранний пул (tie→poolA)
+                if (r > bestRate) {
+                    // ничья — остаётся ранний пул (tie→poolA)
                     bestRate = r;
                     best = a;
                 }

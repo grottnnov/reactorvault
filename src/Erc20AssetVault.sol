@@ -47,7 +47,9 @@ contract Erc20AssetVault {
     uint256 internal constant VIRTUAL_UNITS = 1_000_000;
 
     event VaultDeposit(address indexed sender, address indexed owner, uint256 assets, uint256 shares);
-    event VaultRedeem(address indexed sender, address indexed receiver, address indexed owner, uint256 assets, uint256 shares);
+    event VaultRedeem(
+        address indexed sender, address indexed receiver, address indexed owner, uint256 assets, uint256 shares
+    );
 
     address[] public poolAdapters;
     mapping(address => bool) public isPoolAdapter;
@@ -167,9 +169,7 @@ contract Erc20AssetVault {
         uint256 len = poolAdapters.length;
         uint256 invested;
         for (uint256 i = 0; i < len; i++) {
-            (bool ok, bytes memory ret) = poolAdapters[i].staticcall(
-                abi.encodeWithSignature("truePosition()")
-            );
+            (bool ok, bytes memory ret) = poolAdapters[i].staticcall(abi.encodeWithSignature("truePosition()"));
             if (ok && ret.length >= 32) {
                 invested += abi.decode(ret, (uint256));
             }
