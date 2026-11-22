@@ -81,6 +81,12 @@ contract AavePoolAdapter is IPoolAdapter {
         owner = msg.sender;
     }
 
+    /// @dev ERC-165: the plugin announces IPoolAdapter (and ERC-165 itself);
+    ///      the safe can verify a candidate before whitelisting it.
+    function supportsInterface(bytes4 interfaceId) external pure returns (bool) {
+        return interfaceId == type(IPoolAdapter).interfaceId || interfaceId == 0x01ffc9a7;
+    }
+
     function supply() external payable override onlyVault {
         weth.deposit{value: msg.value}();
         weth.approve(address(aavePool), msg.value);

@@ -22,5 +22,28 @@ jobs:
       - name: Compile
         run: forge build
 
-      - name: Test
+      - name: Test (unit + invariant)
         run: forge test -vv
+
+  fork:
+    # Fork suite against live Sepolia via a public RPC — no secrets.
+    # These assert the real gas budgets of the heaviest path (a full
+    # Aave->Morpho rebalance delivered by the live callback proxy):
+    # the strongest Execution evidence must reproduce automatically.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Compile
+        run: forge build
+
+      - name: Test (fork, live Sepolia + mainnet)
+        env:
+          SEPOLIA_RPC: https://ethereum-sepolia-rpc.publicnode.com
+          MAINNET_RPC: https://ethereum-rpc.publicnode.com
+        run: forge test --match-path 'test/fork/*' -vv

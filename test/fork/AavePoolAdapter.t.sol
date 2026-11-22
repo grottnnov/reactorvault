@@ -2,6 +2,7 @@
 pragma solidity ^0.8.29;
 
 import {Test} from "forge-std/Test.sol";
+import {IPoolAdapter} from "../../src/IPoolAdapter.sol";
 import {AavePoolAdapter} from "../../src/adapters/AavePoolAdapter.sol";
 
 interface IERC20Meta {
@@ -95,5 +96,12 @@ contract AavePoolAdapterForkTest is Test {
         vm.prank(attacker);
         vm.expectRevert(AavePoolAdapter.NotVault.selector);
         adapter.supply{value: 0.01 ether}();
+    }
+
+    /// ERC-165 (checked here because the constructor reads the live pool).
+    function test_SupportsInterface() public view {
+        assertTrue(adapter.supportsInterface(type(IPoolAdapter).interfaceId), "IPoolAdapter");
+        assertTrue(adapter.supportsInterface(0x01ffc9a7), "ERC-165 itself");
+        assertFalse(adapter.supportsInterface(0xffffffff), "no wildcard");
     }
 }

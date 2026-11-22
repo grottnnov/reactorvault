@@ -129,6 +129,12 @@ contract MorphoPoolAdapter is IPoolAdapter {
         owner = msg.sender;
     }
 
+    /// @dev ERC-165: the plugin announces IPoolAdapter (and ERC-165 itself);
+    ///      the safe can verify a candidate before whitelisting it.
+    function supportsInterface(bytes4 interfaceId) external pure returns (bool) {
+        return interfaceId == type(IPoolAdapter).interfaceId || interfaceId == 0x01ffc9a7;
+    }
+
     /// @notice The market parameters, reassembled.
     function marketParams() public view returns (IMorpho.MarketParams memory) {
         return IMorpho.MarketParams(loanToken, collateralToken, marketOracle, marketIrm, marketLltv);
