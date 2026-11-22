@@ -177,6 +177,13 @@ contract RulesEngine is AbstractReactive {
         }
     }
 
+    /// @dev Delivery semantics (judge review 22.11): a `processed` mark is
+    ///      written for every consumed event — including one absorbed by an
+    ///      inactive rule or by the cooldown. Rules are repeatable sources
+    ///      (cron re-emits, alerts re-fire), so an absorbed event is not a
+    ///      loss; one-shot rules would need a queue and are out of MVP
+    ///      scope. The cooldown, however, only starts counting on a REAL
+    ///      fire: an unwired destination chain never burns it.
     function react(LogRecord calldata log_) external override onlySystem {
         _checkGasEdge();
         bytes32 key = keccak256(abi.encodePacked(log_.chainId, log_.blockNumber, log_.topic0));
@@ -191,11 +198,11 @@ contract RulesEngine is AbstractReactive {
         if (uint64(block.timestamp) < rule.lastFiredAt + rule.cooldown) {
             return;
         }
-        rule.lastFiredAt = uint64(block.timestamp);
         address executor = executors[rule.destChainId];
         if (executor == address(0)) {
-            return; // destination chain not wired — the rule stays silent
+            return; // destination chain not wired — the rule stays silent, the cooldown is NOT burned
         }
+        rule.lastFiredAt = uint64(block.timestamp);
         firedCount += 1;
         emit RuleFired(log_.topic0, log_.chainId, log_.blockNumber);
         bytes memory payload = abi.encodeWithSignature("rebalance(address,uint256)", address(0), log_.blockNumber);

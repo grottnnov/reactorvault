@@ -269,5 +269,26 @@ contract RulesEngineTest is Test {
         engine.setExecutor(DEST_CHAIN, e2);
     }
 
+    /// RED regression (judge review 22.11): a rule whose destination chain
+    /// has no executor yet must NOT burn its cooldown. Old behavior set
+    /// lastFiredAt even with no executor wired, so a chain connected a
+    /// minute later stayed silent for the whole cooldown window.
+    function test_UnwiredExecutorDoesNotBurnCooldown() public {
+        uint256 topic2 = uint256(keccak256("Second(uint256)"));
+        engine.setRule(SOURCE_CHAIN, topic2, true, 1 days, OTHER_CHAIN);
+
+        // no executor on OTHER_CHAIN yet — the event is consumed silently
+        _react(SOURCE_CHAIN, topic2, 500);
+        assertEq(sys.callbackCount(), 0, "nothing to fire into");
+
+        // wire the executor a minute later, well inside the 1-day cooldown
+        address exec2 = makeAddr("executor2");
+        engine.setExecutor(OTHER_CHAIN, exec2);
+        vm.warp(block.timestamp + 1 minutes);
+        _react(SOURCE_CHAIN, topic2, 501);
+
+        assertEq(sys.callbackCount(), 1, "a freshly wired chain must fire immediately");
+    }
+
     event RuleFired(uint256 indexed topic0, uint256 originChainId, uint256 originBlockNumber);
 }
