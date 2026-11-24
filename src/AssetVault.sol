@@ -39,6 +39,22 @@ contract AssetVault is IAssetVault {
     /// @notice The treasury share already routed to the battery.
     uint256 public treasurySent;
 
+    /// ------------------------------------------------ Pay-on-delivery (ADR-GAS)
+    /// @notice Service fees owed to the system (wei) — an ACCOUNTING
+    ///         entry, never a transfer at action time: a fully deployed
+    ///         (staked) safe cannot fail to pay. Collected at cash
+    ///         events (deposit here; redeem and capital transit follow).
+    uint256 public accruedFees;
+
+    /// @notice Fees already paid out (ledger side of the invariant:
+    ///         balance + feesPaidOut + totalInPools + treasurySent
+    ///         ≡ totalDeposited).
+    uint256 public feesPaidOut;
+
+    /// @notice Hard cap on a single fee charge — the safe auto-refuses
+    ///         an anomalous charge (revert + event); owner-tunable.
+    uint256 public feeCapWei = 0.1 ether;
+
     /// ------------------------------------------------- ERC-4626-lite (17.11)
     /// @notice User share accounting (ADR-MULTI-ASSET-CHAINS): a deposit
     ///         mints shares on WORKING capital (minus the treasury), a
@@ -71,6 +87,9 @@ contract AssetVault is IAssetVault {
 
     event Deposited(address indexed user, uint256 amount, uint256 toTreasury);
     event TreasurySent(uint256 weiAmount);
+    event FeeCapSet(uint256 capWei);
+    event FeeAccrued(uint256 weiAmount);
+    event FeesCollected(address indexed to, uint256 weiAmount);
     event ExecutorAuthorized(address indexed executor);
     event Withdrawn(address indexed user, uint256 amount);
     event PoolAdapterAuthorized(address indexed adapter);
@@ -93,6 +112,7 @@ contract AssetVault is IAssetVault {
     error SettleMismatch();
     error InsufficientShares();
     error ZeroShares();
+    error FeeAboveCap(uint256 asked, uint256 cap);
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert NotOwner();
@@ -122,6 +142,44 @@ contract AssetVault is IAssetVault {
     function setTreasuryBps(uint32 bps_) external onlyOwner noDelegateCall {
         if (bps_ > 10_000) revert BadParams();
         treasuryBps = bps_;
+    }
+
+    /// @notice Pay-on-delivery (ADR-GAS): the fee cap is money — every
+    ///         change is announced on-chain. A charge above the cap is
+    ///         auto-refused by the safe itself.
+    function setFeeCap(uint256 capWei_) external onlyOwner noDelegateCall {
+        if (capWei_ == 0) revert ZeroAmount();
+        feeCapWei = capWei_;
+        emit FeeCapSet(capWei_);
+    }
+
+    /// @notice Executor service fee: ACCRUED, never transferred here —
+    ///         the safe records what the system earned and settles it at
+    ///         the next cash event (a fully staked safe cannot fail to
+    ///         pay by construction). An anomalous charge reverts.
+    function chargeFee(uint256 weiAmount) external onlyExecutor noDelegateCall {
+        if (weiAmount == 0) revert ZeroAmount();
+        if (weiAmount > feeCapWei) revert FeeAboveCap(weiAmount, feeCapWei);
+        accruedFees += weiAmount;
+        emit FeeAccrued(weiAmount);
+    }
+
+    /// @dev Cash-event settlement: accrued fees leave the safe to the
+    ///      executor, bounded by the balance actually available. P9: the
+    ///      event precedes the external call.
+    function _collectFees() internal {
+        uint256 pay = accruedFees;
+        if (pay == 0) {
+            return;
+        }
+        if (pay > address(this).balance) {
+            pay = address(this).balance;
+        }
+        accruedFees -= pay;
+        feesPaidOut += pay;
+        emit FeesCollected(executor, pay);
+        (bool ok,) = executor.call{value: pay}("");
+        if (!ok) revert TransferFailed();
     }
 
     function authorizeExecutor(address executor_) external onlyOwner noDelegateCall {
@@ -208,6 +266,7 @@ contract AssetVault is IAssetVault {
             emit TreasurySent(toTreasury);
             gasVault.treasuryIn{value: toTreasury}();
         }
+        _collectFees(); // a deposit is a cash event (ADR-GAS)
     }
 
     /// @notice User assets: ledgerFree + real pool positions.
