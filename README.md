@@ -17,42 +17,47 @@ guardian for tokenized equities** — see *Status & roadmap* below.
 ## How it works (C4 container view)
 
 ```
-                     Sepolia (destination chain)              Reactive Lasna (reactive chain)
- ┌──────────────────────────────────────────────────┐   ┌─────────────────────────────────────────────┐
- │                                                  │   │                                             │
- │  client ──ETH──▶ ┌────────────────────┐          │   │  ┌──────────────┐   react()   ┌───────────┐ │
- │                  │ AssetVault (safe)  │          │   │  │ GasPayer     │◀───────────│ any event │ │
- │                  │ pockets: gas/fund │          │   │  │ (cashier)    │            └───────────┘ │
- │                  └────────┬───────────┘          │   │  └──────┬───────┘                          │
- │                           │ capital transit      │   │         │ orders refill                    │
- │  ┌────────────────┐       ▼                      │   │         ▼                                  │
- │  │ Executor       │◀──── callback ───────────────┼───┼── RulesEngine (brain)                       │
- │  │ (the hands)    │  rebalance / refuel          │   │  ┌──────────────┐                           │
- │  └───────┬────────┘                              │   │  │ FuelConverter│── HorizonAlert ──┐        │
- │          │ deploy/recall                         │   │  └──────────────┘                 ▼        │
- │  ┌───────▼────────┐   ┌──────────────────┐       │   │  ┌──────────────┐  buyFuel   ┌───────────┐ │
- │  │ pool adapters  │   │ GasVault         │       │   │  │ ReliefFund   │◀──callback─│FuelBuyer  │ │
- │  │ Aave / Morpho  │   │ (battery)        │       │   │  │ (fuel depot) │──lREACT──▶ feeds all  │ │
- │  └────────────────┘   └──────────────────┘       │   │  └──────────────┘           reactive   │ │
- │  ┌────────────────┐   ┌──────────────────┐       │   │  ┌──────────────┐           contracts  │ │
- │  │ OneToOneOracle │   │ FuelBuyer        │───────┼───┼─▶             │  (SYSTEM deposits)     │ │
- │  └────────────────┘   │ (ETH fund exit)  │       │   │  │ Watchdog     │  cron patrol + cry      │ │
- │                      └──────────────────┘       │   │  │ (patrol)     │  relay                  │ │
- │                                                  │   │  └──────────────┘                         │ │
- └──────────────────────────────────────────────────┘   └─────────────────────────────────────────────┘
+                    Sepolia (destination chain)                Reactive Lasna (reactive chain)
+ ┌────────────────────────────────────────────────┐   ┌─────────────────────────────────────────────┐
+ │                                                │   │                                             │
+ │ client ──ETH──▶ ┌────────────────────┐         │   │  ┌──────────────┐   react()   ┌───────────┐ │
+ │  (entry free,   │ AssetVault (safe)  │         │   │  │ RulesEngine  │◀───────────│ any event │ │
+ │   0% of deposit)│ fees accrue →      │         │   │  │ (brain)      │            └───────────┘ │
+ │                 │ settle at cash     │         │   │  └──────┬───────┘                          │
+ │                 │ events; hard cap   │         │   │         │ callback (the only sender)        │
+ │                 └────────┬───────────┘         │   │         ▼                                  │
+ │  ┌───────────────┐      │ capital transit      │   │  ┌──────────────┐                           │
+ │  │ Executor v3   │◀──── callback ──────────────┼───┤  │ FuelConverter│── HorizonAlert ──┐        │
+ │  │ bills served  │  rebalance + billing        │   │  └──────────────┘                 ▼        │
+ │  │ safes; sweeps │      ▲ margin               │   │  ┌──────────────┐  buyFuel    ┌──────────┐│
+ │  └───────┬───────┘      │                       │   │  │ ReliefFund   │◀─callback───│FuelBuyer ││
+ │          │ deploy/recall│                       │   │  │ (fuel depot) │──lREACT──▶  └──────────┘│
+ │  ┌───────▼────────┐  ┌──┴──────────────┐        │   │  └──────────────┘  feeds all   ▲ pulls    │
+ │  │ pool adapters  │  │ GasVault        │        │   │  ┌──────────────┐  reactive    │ from the │
+ │  │ Aave / Morpho  │  │ (the fund: REACT│────────┼───┼─▶│ Watchdog     │  contracts   │ fund     │
+ │  └────────────────┘  │ half + execution│        │   │  │ (patrol)     │  cron patrol+cry        │
+ │  ┌────────────────┐  │ half)           │        │   │  └──────────────┘                         │ │
+ │  │ OneToOneOracle │  └─────────────────┘        │   │                                             │
+ │  └────────────────┘                             │   │                                             │
+ └────────────────────────────────────────────────┘   └─────────────────────────────────────────────┘
 ```
 
 1. **The safe** (`AssetVault`, destination chain) takes a native-ETH
-   deposit and splits it into pockets: the client's gas reserve and the
-   treasury share (the ETH fund). Accounting invariant:
-   `balance + treasurySent ≡ totalDeposited` — fuzz-tested. The
-   **battery** (`GasVault`) is the single gas pocket of the system
-   (client fuel + treasury), invariant `reserve + treasury ≡ balance`.
+   deposit — the entry is free, zero percent of the deposit in any form.
+   Accounting invariant:
+   `balance + feesPaidOut + treasurySent + totalInPools ≡ totalDeposited`
+   — fuzz-tested. The **fund** (`GasVault`) is the two-halves treasury:
+   a REACT-obligations half (the depot feeds the reactive side directly)
+   and an execution half; invariant `treasury ≡ balance`.
 2. **The brain** (`RulesEngine`, Reactive) subscribes to events and
    fires `rebalance` callbacks. Product logic only — no cash handling.
-3. **The cashier** (`GasPayer`, Reactive) watches the executor's ETH
-   tank and the client's reserve mirror, and orders refills with a
-   margin into the treasury. Tariffs are ETH-native: no price feeds.
+3. **Pay on delivery** (ADR-GAS): every served action is billed to its
+   safe as an ACCRUAL — no transfer at action time, a fully staked safe
+   cannot fail to pay. Fees settle at cash events (deposit, redeem,
+   capital transit); an anomalous charge is auto-refused by the safe
+   (hard cap); a settlement buffer always stays in cash. The executor's
+   tank self-sustains; everything above the tank target is swept into
+   the fund as margin.
 4. **The depot** (`ReliefFund`, Lasna) holds lREACT and feeds every
    reactive contract by real numbers (`reserves − debts` on the SYSTEM
    contract). Feeding is a data registry — a new ward is a record, not
@@ -73,19 +78,18 @@ depot autonomously.
 
 | Contract | File | Chain | Role |
 |---|---|---|---|
-| `AssetVault` | `src/AssetVault.sol` | Sepolia | ETH safe: pockets, deposit split, invariant accounting |
-| `GasVault` | `src/GasVault.sol` | Sepolia | battery: the single gas pocket (client fuel + treasury) |
-| `Executor` | `src/Executor.sol` | Sepolia | callback receiver: rebalance + ETH-tank refills, two valid senders |
+| `AssetVault` | `src/AssetVault.sol` | Sepolia | ETH safe: free entry, accrued fees, hard cap, settlement buffer, invariant accounting |
+| `GasVault` | `src/GasVault.sol` | Sepolia | the fund: margin intake, buyer pulls (spend ≤ earned), invariant treasury ≡ balance |
+| `Executor` | `src/Executor.sol` | Sepolia | callback receiver: rebalance + per-action billing + margin sweep (brain is the only sender) |
 | `AavePoolAdapter` / `MorphoPoolAdapter` | `src/adapters/` | Sepolia | pool plugins (IPoolAdapter); capital transits through the safe |
 | `OneToOneOracle` | `src/OneToOneOracle.sol` | Sepolia | fixed 1:1 rate source for the demo market |
-| `FuelBuyer` | `src/FuelBuyer.sol` | Sepolia | ETH fund → faucet/DEX → lREACT to the depot |
+| `FuelBuyer` | `src/FuelBuyer.sol` | Sepolia | pulls purchase funds from the fund itself → faucet/DEX → lREACT to the depot |
 | `RulesEngine` | `src/RulesEngine.sol` | Reactive | event rules → callbacks; idempotent, cooldowns, gas cry |
-| `GasPayer` | `src/GasPayer.sol` | Reactive | cashier: tariff, refill orders, reserve mirror, gas cry |
 | `FuelConverter` | `src/FuelConverter.sol` | Reactive | depot horizon listener → purchase orders |
 | `ReliefFund` | `src/ReliefFund.sol` | Lasna | fuel depot: ward registry, real-number feeding, horizon alerts |
 | `Watchdog` | `src/Watchdog.sol` | Lasna/Reactive | cron patrol + cry relay, zero idle cost |
 
-### Live testnet stand (checked 19.11)
+### Live testnet stand (checked 19.11 — the W2.2 generation; superseded by the W3 pay-on-delivery family at the next redeploy)
 
 | Contract | Chain | Address |
 |---|---|---|
