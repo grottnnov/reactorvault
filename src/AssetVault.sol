@@ -55,6 +55,10 @@ contract AssetVault is IAssetVault {
     ///         an anomalous charge (revert + event); owner-tunable.
     uint256 public feeCapWei = 0.1 ether;
 
+    /// @notice Settlement buffer (ADR-GAS): free capital that never gets
+    ///         deployed to pools — fee settlement always has live cash.
+    uint256 public bufferWei;
+
     /// ------------------------------------------------- ERC-4626-lite (17.11)
     /// @notice User share accounting (ADR-MULTI-ASSET-CHAINS): a deposit
     ///         mints shares on WORKING capital (minus the treasury), a
@@ -88,6 +92,7 @@ contract AssetVault is IAssetVault {
     event Deposited(address indexed user, uint256 amount, uint256 toTreasury);
     event TreasurySent(uint256 weiAmount);
     event FeeCapSet(uint256 capWei);
+    event BufferWeiSet(uint256 bufferWei);
     event FeeAccrued(uint256 weiAmount);
     event FeesCollected(address indexed to, uint256 weiAmount);
     event ExecutorAuthorized(address indexed executor);
@@ -153,6 +158,13 @@ contract AssetVault is IAssetVault {
         emit FeeCapSet(capWei_);
     }
 
+    /// @notice The settlement buffer is money — announced on change.
+    function setBufferWei(uint256 bufferWei_) external onlyOwner noDelegateCall {
+        if (totalDeposited - totalInPools() < bufferWei_) revert InsufficientFree();
+        bufferWei = bufferWei_;
+        emit BufferWeiSet(bufferWei_);
+    }
+
     /// @notice Executor service fee: ACCRUED, never transferred here —
     ///         the safe records what the system earned and settles it at
     ///         the next cash event (a fully staked safe cannot fail to
@@ -200,11 +212,13 @@ contract AssetVault is IAssetVault {
 
     /// @notice Deploy free capital to a pool (executor only). Effects
     ///         before the external call; a reverting supply undoes the
-    ///         ledger atomically.
+    ///         ledger atomically. Pay-on-delivery: the settlement buffer
+    ///         stays undeployed — fee settlement always has cash.
     function deployToPool(address adapter_, uint256 amount_) external override onlyExecutor noDelegateCall {
         if (!isPoolAdapter[adapter_]) revert AdapterUnknown();
         if (amount_ == 0) revert ZeroAmount();
-        if (amount_ > totalDeposited - totalInPools()) revert InsufficientFree();
+        uint256 free = totalDeposited - totalInPools();
+        if (free < bufferWei || amount_ > free - bufferWei) revert InsufficientFree();
         inPoolOf[adapter_] += amount_;
         emit DeployedToPool(adapter_, amount_);
         IPoolAdapter(adapter_).supply{value: amount_}();
@@ -216,6 +230,7 @@ contract AssetVault is IAssetVault {
     ///         whole recall.
     function recallFromPool(address adapter_, uint256 amount_) external override onlyExecutor noDelegateCall {
         _recall(adapter_, amount_);
+        _collectFees(); // recalled capital transits the safe — a cash event
     }
 
     function _recall(address adapter_, uint256 amount_) internal {
@@ -312,9 +327,23 @@ contract AssetVault is IAssetVault {
         }
         totalShares -= shares_;
         shareOf[msg.sender] -= shares_;
-        totalDeposited -= assets;
-        emit VaultRedeem(msg.sender, msg.sender, msg.sender, assets, shares_);
-        (bool ok,) = msg.sender.call{value: assets}("");
+        // Pay-on-delivery (ADR-GAS): an exit is a cash event — accrued
+        // fees settle out of the payout; the ledger exits only what the
+        // user actually receives.
+        uint256 feePay = accruedFees;
+        if (feePay > assets) {
+            feePay = assets;
+        }
+        accruedFees -= feePay;
+        feesPaidOut += feePay;
+        totalDeposited -= assets - feePay;
+        emit VaultRedeem(msg.sender, msg.sender, msg.sender, assets - feePay, shares_);
+        if (feePay > 0) {
+            emit FeesCollected(executor, feePay);
+            (bool okFee,) = executor.call{value: feePay}("");
+            if (!okFee) revert TransferFailed();
+        }
+        (bool ok,) = msg.sender.call{value: assets - feePay}("");
         if (!ok) revert TransferFailed();
     }
 

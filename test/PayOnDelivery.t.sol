@@ -3,6 +3,7 @@ pragma solidity ^0.8.29;
 
 import {Test} from "forge-std/Test.sol";
 import {AssetVault} from "../src/AssetVault.sol";
+import {MockPool} from "./mocks/MockPool.sol";
 
 /// @notice Pay-on-delivery fee accounting (ADR-GAS-ARCHITECTURE, 24.11):
 ///         1) a deposit takes NOTHING beyond working capital (entry = 0,
@@ -85,5 +86,57 @@ contract PayOnDeliveryTest is Test {
         vm.prank(alice);
         vm.expectRevert();
         vault.setFeeCap(1 ether);
+    }
+
+    function test_fees_settle_at_redeem() public {
+        vm.prank(alice);
+        vault.deposit{value: 1 ether}();
+        vm.prank(executor);
+        vault.chargeFee(0.01 ether);
+        uint256 aliceBefore = alice.balance;
+        uint256 shares = vault.shareOf(alice);
+        vm.prank(alice);
+        vault.redeem(shares);
+        assertEq(vault.accruedFees(), 0, "settled at exit");
+        assertEq(alice.balance - aliceBefore, 0.99 ether, "user gets assets minus fees");
+        assertEq(executor.balance, 0.01 ether);
+        assertEq(address(vault).balance, 0, "safe is empty");
+    }
+
+    function test_redeem_always_works_when_fees_exceed_balance() public {
+        // fully "staked" scenario: fee accrued beyond free cash settles
+        // partially from the payout, never blocks the exit
+        vm.prank(alice);
+        vault.deposit{value: 1 ether}();
+        vm.prank(executor);
+        vault.chargeFee(0.1 ether);
+        uint256 shares = vault.shareOf(alice);
+        vm.prank(alice);
+        vault.redeem(shares);
+        assertEq(address(vault).balance, 0);
+        assertEq(executor.balance, 0.1 ether);
+    }
+
+    function test_buffer_keeps_settlement_cash_undeployed() public {
+        MockPool pool = new MockPool();
+        vm.prank(owner);
+        vault.authorizePoolAdapter(address(pool));
+        vm.prank(alice);
+        vault.deposit{value: 1 ether}();
+        vm.prank(owner);
+        vault.setBufferWei(0.3 ether);
+        vm.prank(executor);
+        vm.expectRevert();
+        vault.deployToPool(address(pool), 0.8 ether); // would eat the buffer
+        vm.prank(executor);
+        vault.deployToPool(address(pool), 0.7 ether); // leaves 0.3 free
+        assertEq(address(vault).balance, 0.3 ether, "buffer stays in cash");
+        // recall transit settles fees without a new cash event
+        vm.prank(executor);
+        vault.chargeFee(0.05 ether);
+        vm.prank(executor);
+        vault.recallFromPool(address(pool), 0.2 ether);
+        assertEq(vault.accruedFees(), 0, "transit is a cash event");
+        assertEq(executor.balance, 0.05 ether);
     }
 }
