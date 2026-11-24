@@ -4,219 +4,146 @@ pragma solidity ^0.8.29;
 import {Test} from "forge-std/Test.sol";
 import {GasVault} from "../src/GasVault.sol";
 
-/// @dev GasVault (ADR-EXPANSION §2): the ONE gas pocket — client fuel
-///      reserve + treasury. Invariant: pockets ≡ balance; NoDelegateCall,
-///      donation guard; executor-only draws.
+/// @dev GasVault — the fund (ADR-GAS-ARCHITECTURE): the ETH half of the
+///      treasury, fed by executor margin sweeps; the prepaid client
+///      pocket and its reserve plumbing are GONE. The buyer pulls its
+///      purchase funds itself, capped per purchase and bounded by
+///      "spend no more than earned". Invariant: treasury == balance.
 contract GasVaultTest is Test {
-    GasVault public battery;
-    address alice = makeAddr("alice");
+    GasVault fund;
+    address owner = makeAddr("owner");
     address executor = makeAddr("executor");
+    address buyer = makeAddr("buyer");
 
     function setUp() public {
-        vm.prank(alice);
-        battery = new GasVault(); // owner = alice
-        vm.prank(alice);
-        battery.authorizeExecutor(executor);
-        vm.deal(alice, 100 ether);
+        vm.prank(owner);
+        fund = new GasVault();
+        vm.prank(owner);
+        fund.authorizeExecutor(executor);
+        vm.prank(owner);
+        fund.authorizeBuyer(buyer, 0.05 ether);
+        vm.deal(owner, 10 ether);
+        vm.deal(executor, 10 ether); // backs the margin-sweep transfers
+        vm.deal(buyer, 1 ether); // gas for receiving (an EOA accepts anyway)
     }
 
-    function _fuel(uint256 amount) internal {
-        vm.prank(alice);
-        battery.depositFuel{value: amount}();
-    }
+    // ------------------------------------------------- margin intake
 
-    function testDepositFuelZeroReverts() public {
-        vm.prank(alice);
-        vm.expectRevert(GasVault.ZeroAmount.selector);
-        battery.depositFuel{value: 0}();
-    }
-
-    /// Fuel top-up: everything lands in the client pocket.
-    function testDepositFuelFillsReserve() public {
-        _fuel(1 ether);
-        assertEq(battery.gasReserve(), 1 ether);
-        assertEq(battery.treasury(), 0);
-        assertEq(address(battery).balance, 1 ether, "pockets == balance");
-    }
-
-    /// consumeGasReserve: reserve → treasury reshuffle, ETH never leaves
-    /// the battery (margin accounting).
-    function testConsumeMovesReserveToTreasury() public {
-        _fuel(1 ether);
-        uint256 balanceBefore = address(battery).balance;
-
+    function test_treasuryIn_accrues_treasury_and_earned() public {
+        vm.expectEmit(false, false, false, true, address(fund));
+        emit GasVault.TreasuryUpdated(0.48 ether);
         vm.prank(executor);
-        battery.consumeGasReserve(0.3 ether);
-
-        assertEq(battery.gasReserve(), 0.7 ether);
-        assertEq(battery.treasury(), 0.3 ether);
-        assertEq(address(battery).balance, balanceBefore, "ETH stays inside");
+        fund.treasuryIn{value: 0.48 ether}();
+        assertEq(fund.treasury(), 0.48 ether);
+        assertEq(fund.earned(), 0.48 ether, "income counter");
+        assertEq(address(fund).balance, 0.48 ether, "invariant: treasury == balance");
     }
 
-    function testConsumeInsufficientReverts() public {
-        _fuel(1 ether);
+    // ------------------------------------------------- owner hand
+
+    function test_withdrawTreasury_profit_extraction() public {
         vm.prank(executor);
-        vm.expectRevert(GasVault.InsufficientReserve.selector);
-        battery.consumeGasReserve(1.1 ether);
+        fund.treasuryIn{value: 1 ether}();
+
+        vm.prank(owner);
+        fund.withdrawTreasury(owner, 0.4 ether);
+        assertEq(fund.treasury(), 0.6 ether);
+        assertEq(fund.ownerWithdrawn(), 0.4 ether, "profit withdrawals counted");
+        assertEq(owner.balance, 10 ether + 0.4 ether); // executor funded the sweep, not the owner
     }
 
-    function testConsumeOnlyExecutor() public {
-        _fuel(1 ether);
-        vm.prank(alice);
-        vm.expectRevert(GasVault.NotExecutor.selector);
-        battery.consumeGasReserve(0.1 ether);
-    }
-
-    /// releaseReserveTo: exact wei withdrawal to the executor's tank.
-    function testReleaseReserveExact() public {
-        _fuel(1 ether);
-        address sink = makeAddr("sink");
-
+    function test_withdrawTreasury_insufficient_reverts() public {
         vm.prank(executor);
-        battery.releaseReserveTo(sink, 0.4 ether);
-
-        assertEq(sink.balance, 0.4 ether);
-        assertEq(battery.gasReserve(), 0.6 ether);
-        assertEq(battery.treasury(), 0);
-        assertEq(address(battery).balance, 0.6 ether, "balance == remaining pocket");
-    }
-
-    /// treasuryIn: an explicit intake (from an AssetVault deposit share
-    /// or a partner) — the invariant holds.
-    function testTreasuryIn() public {
-        vm.deal(address(this), 0.1 ether);
-        battery.treasuryIn{value: 0.1 ether}();
-        assertEq(battery.treasury(), 0.1 ether);
-        assertEq(address(battery).balance, 0.1 ether, "pockets == balance");
-    }
-
-    /// withdrawTreasury: treasury → converter/buyer, owner only.
-    function testWithdrawTreasury() public {
-        vm.deal(address(this), 0.1 ether);
-        battery.treasuryIn{value: 0.1 ether}();
-        address converter = makeAddr("converter");
-
-        vm.prank(alice);
-        battery.withdrawTreasury(converter, 0.1 ether);
-
-        assertEq(converter.balance, 0.1 ether);
-        assertEq(battery.treasury(), 0);
-
-        vm.prank(alice);
+        fund.treasuryIn{value: 0.1 ether}();
+        vm.prank(owner);
         vm.expectRevert(GasVault.InsufficientTreasury.selector);
-        battery.withdrawTreasury(converter, 1 wei);
+        fund.withdrawTreasury(owner, 0.2 ether);
     }
 
-    function testWithdrawTreasuryOnlyOwner() public {
-        vm.deal(address(this), 1 wei);
-        battery.treasuryIn{value: 1 wei}();
-        vm.prank(executor);
+    function test_withdrawTreasury_only_owner() public {
+        vm.prank(buyer);
         vm.expectRevert(GasVault.NotOwner.selector);
-        battery.withdrawTreasury(executor, 1 wei);
+        fund.withdrawTreasury(buyer, 1 wei);
     }
 
-    /// P7/G15: direct transfers (donations) are reverted — explicitness
-    /// over drift (depositFuel/treasuryIn are the entries).
-    function testDonationsReverted() public {
+    // ------------------------------------------------- buyer pull
+
+    function test_buyer_pulls_within_cap_and_earned() public {
+        vm.prank(executor);
+        fund.treasuryIn{value: 1 ether}();
+
+        uint256 buyerBefore = buyer.balance;
+        vm.prank(buyer);
+        fund.pullForPurchase(0.05 ether);
+        assertEq(buyer.balance - buyerBefore, 0.05 ether, "purchase funds received");
+        assertEq(fund.buyerSpent(), 0.05 ether);
+        assertEq(fund.treasury(), 0.95 ether);
+    }
+
+    function test_pull_above_cap_is_refused() public {
+        vm.prank(executor);
+        fund.treasuryIn{value: 1 ether}();
+        vm.prank(buyer);
+        vm.expectRevert(abi.encodeWithSelector(GasVault.CapExceeded.selector, 0.06 ether, 0.05 ether));
+        fund.pullForPurchase(0.06 ether);
+    }
+
+    /// The core guard: the fund may spend no more than it has EARNED.
+    function test_pull_above_earned_is_refused() public {
+        vm.prank(executor);
+        fund.treasuryIn{value: 0.01 ether}();
+        vm.prank(buyer);
+        vm.expectRevert(abi.encodeWithSelector(GasVault.SpentAboveEarned.selector, 0.02 ether, 0.01 ether));
+        fund.pullForPurchase(0.02 ether); // within the cap, above the earned
+    }
+
+    /// Owner profit extraction reduces what the buyer may spend.
+    function test_owner_withdrawal_shrinks_buyer_room() public {
+        vm.prank(executor);
+        fund.treasuryIn{value: 0.05 ether}();
+        vm.prank(owner);
+        fund.withdrawTreasury(owner, 0.03 ether);
+
+        vm.prank(buyer);
+        vm.expectRevert(abi.encodeWithSelector(GasVault.SpentAboveEarned.selector, 0.05 ether, 0.02 ether));
+        fund.pullForPurchase(0.05 ether); // cap allows, earned-room is 0.02
+
+        vm.prank(buyer);
+        fund.pullForPurchase(0.02 ether); // exactly the room
+        assertEq(fund.buyerSpent(), 0.02 ether);
+    }
+
+    function test_pull_only_buyer() public {
+        vm.prank(executor);
+        fund.treasuryIn{value: 1 ether}();
+        vm.prank(owner);
+        vm.expectRevert(GasVault.NotBuyer.selector);
+        fund.pullForPurchase(0.01 ether);
+    }
+
+    function test_buyer_cap_change_is_announced() public {
+        vm.expectEmit(false, false, false, true, address(fund));
+        emit GasVault.BuyCapSet(0.1 ether);
+        vm.prank(owner);
+        fund.setBuyCap(0.1 ether);
+        assertEq(fund.buyCapWei(), 0.1 ether);
+    }
+
+    // ------------------------------------------------- hygiene
+
+    /// Donation policy: a direct transfer reverts — the invariant must
+    /// not drift (G15 canon).
+    function test_donations_denied() public {
+        vm.prank(owner);
         vm.expectRevert(GasVault.DonationsNotAllowed.selector);
-        (bool ok,) = address(battery).call{value: 1 ether}("");
-        ok; // the revert is already checked by expectRevert
+        address(fund).call{value: 1 wei}("");
     }
 
-    /// P10: delegatecall into a foreign context is denied.
-    function testNoDelegateCall() public {
-        _fuel(1 ether);
-
-        DelegateCaller caller = new DelegateCaller();
-        vm.deal(address(caller), 1 ether);
-        vm.expectRevert(GasVault.DelegateCallNotAllowed.selector);
-        caller.callDepositFuel(address(battery));
-    }
-
-    /// withdrawAll: MVP sweep — the client can always take everything.
-    function testWithdrawAllSweeps() public {
-        _fuel(1 ether);
-        vm.deal(address(this), 0.1 ether);
-        battery.treasuryIn{value: 0.1 ether}();
-        uint256 ownerBefore = alice.balance;
-
-        vm.prank(alice);
-        battery.withdrawAll();
-
-        assertEq(alice.balance, ownerBefore + 1.1 ether);
-        assertEq(battery.gasReserve(), 0);
-        assertEq(battery.treasury(), 0);
-    }
-
-    /// P9 order regression: the withdrawal event is emitted before the
-    /// transfer, after the pocket events — the log sequence is part of
-    /// the contract's observable behavior.
-    function testWithdrawAllEventOrder() public {
-        _fuel(0.4 ether);
-        vm.deal(address(this), 0.1 ether);
-        battery.treasuryIn{value: 0.1 ether}();
-
-        vm.prank(alice);
-        vm.expectEmit(true, true, true, true, address(battery));
-        emit GasVault.GasReserveUpdated(0);
-        vm.expectEmit(true, true, true, true, address(battery));
-        emit GasVault.TreasuryUpdated(0);
-        vm.expectEmit(true, true, true, true, address(battery));
-        emit GasVault.Withdrawn(alice, 0.5 ether);
-        battery.withdrawAll();
-    }
-}
-
-/// @dev P9: state and events settle BEFORE the external transfer — a
-///      reentrant owner receiver cannot observe a half-settled vault
-///      (the nested sweep sees zeros and pays out nothing twice).
-contract ReentrantSweepOwner {
-    GasVault public battery;
-    bool public reentered;
-
-    constructor() payable {
-        battery = new GasVault();
-        battery.depositFuel{value: 0.5 ether}();
-        battery.treasuryIn{value: 0.1 ether}();
-    }
-
-    function sweep() external {
-        battery.withdrawAll();
-    }
-
-    receive() external payable {
-        if (!reentered) {
-            reentered = true;
-            battery.withdrawAll(); // the reentrant second sweep must see zeros
-        }
-    }
-}
-
-contract GasVaultReentrantTest is Test {
-    /// The nested sweep inside receive() sees a fully settled vault
-    /// (reserve 0, treasury 0, balance 0) — nothing is paid twice and
-    /// nothing reverts. State settles before the external call (P9).
-    function testWithdrawAllReentrantOwnerSafe() public {
-        ReentrantSweepOwner owner = new ReentrantSweepOwner{value: 1 ether}();
-        GasVault battery = owner.battery();
-
-        owner.sweep();
-
-        assertTrue(owner.reentered(), "the nested sweep did run");
-        assertEq(address(owner).balance, 1 ether, "0.4 constructor rest + 0.6 paid exactly once");
-        assertEq(battery.gasReserve(), 0);
-        assertEq(battery.treasury(), 0);
-        assertEq(address(battery).balance, 0);
-    }
-}
-
-contract DelegateCaller {
-    function callDepositFuel(address target) external payable {
-        (bool ok, bytes memory ret) = target.delegatecall(abi.encodeWithSignature("depositFuel()"));
-        if (!ok) {
-            assembly {
-                revert(add(ret, 32), mload(ret))
-            }
-        }
+    /// No pull is possible before the system earns its first margin —
+    /// the bootstrap gap is covered by the depot's starter supply.
+    function test_no_pull_before_income() public {
+        vm.prank(buyer);
+        vm.expectRevert(abi.encodeWithSelector(GasVault.SpentAboveEarned.selector, 0.01 ether, 0));
+        fund.pullForPurchase(0.01 ether);
     }
 }

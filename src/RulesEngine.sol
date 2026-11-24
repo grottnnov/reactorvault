@@ -12,11 +12,12 @@ import {ISystemContract} from "reactive-lib-omni/interfaces/ISystemContract.sol"
 ///         stays two independent rules. The callback destination chain
 ///         is configured data, not a code constant — a per-chain
 ///         Executor instance is the expansion path (ADR-EXPANSION §3).
-///         Cash-handling lives in the cashier (GasPayer), not here (P3
-///         canon: mechanics ≠ product). Free eyes on its own lREACT
-///         tank in every react() + a LowGas cry. Idempotency: a
-///         processed-set of (chainId, blockNumber, topic0). P10:
-///         noDelegateCall on owner entry points.
+///         Cash-handling lives elsewhere, not here (P3 canon: mechanics
+///         ≠ product; pay-on-delivery billing is the executor's job,
+///         ADR-GAS-ARCHITECTURE). Free eyes on its own lREACT tank in
+///         every react() + a LowGas cry. Idempotency: a processed-set
+///         of (chainId, blockNumber, topic0). P10: noDelegateCall on
+///         owner entry points.
 contract RulesEngine is AbstractReactive {
     /// @dev The heaviest callback in the system is the alarm rebalance:
     ///      a full pool move measured 796k live (Aave supply with rewards

@@ -43,7 +43,6 @@ contract ExecutorRebalanceForkTest is Test {
     Executor executor;
 
     address brain = makeAddr("brain");
-    address cashier = makeAddr("cashier");
     address user = makeAddr("user");
     address operator = makeAddr("operator");
 
@@ -57,7 +56,7 @@ contract ExecutorRebalanceForkTest is Test {
 
         vault = new AssetVault();
         battery = new GasVault();
-        executor = new Executor(brain, PROXY, IExecutorVault(address(vault)), battery, cashier);
+        executor = new Executor(brain, PROXY, IExecutorVault(address(vault)), battery);
 
         aaveAdapter = new AavePoolAdapter(address(vault), AAVE_POOL, WETH);
         morphoAdapter = new MorphoPoolAdapter(address(vault), MORPHO, mp, IRM);

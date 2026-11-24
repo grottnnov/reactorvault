@@ -7,13 +7,15 @@ import {IPoolAdapter} from "./IPoolAdapter.sol";
 import {AbstractCallback} from "reactive-lib-omni/base/AbstractCallback.sol";
 import {IPayable} from "reactive-lib-omni/interfaces/IPayable.sol";
 
-/// @title Executor v2 — carries out instructions from the brain and the
-///        cashier (ADR-v2 + ADR-EXPANSION §2)
-/// @notice Two valid callback senders: RulesEngine (rebalance) and the
-///         GasPayer cashier (refuelEthTank). Capital work goes through
-///         the AssetVault, fuel through the GasVault — one battery for
-///         every asset and chain. Per-chain instances on expansion
-///         (same code, new deploy; ADR-EXPANSION §3).
+/// @title Executor v3 — carries out instructions from the brain
+///        (ADR-GAS-ARCHITECTURE: pay-on-delivery)
+/// @notice The single valid callback sender is the brain (RulesEngine):
+///         rebalance. Service fees are billed to the safe the work was
+///         done for (accrued on the safe, settled at its cash events)
+///         and the tank self-sustains: everything above the tank target
+///         is swept into the fund as margin. Capital work goes through
+///         the AssetVault, fuel margins through the GasVault fund.
+///         Per-chain instances on expansion (same code, new deploy).
 /// @dev A vault slice for the multi-asset executor: both branches (ETH
 ///      AssetVault and Erc20AssetVault) satisfy this interface.
 interface IExecutorVault {
@@ -34,24 +36,36 @@ contract Executor is AbstractCallback {
     mapping(address => bool) public isVault;
     IGasVault public gasVault;
 
-    /// @notice ETH tank: below the threshold → ExecutorLowEth event; the
-    ///         cashier (Lasna) is subscribed and refills the tank by
-    ///         drawing from the client's fuel reserve (GasVault).
+    /// @notice ETH tank: below the threshold → ExecutorLowEth event —
+    ///         a loud alarm (pay-on-delivery: the tank self-sustains on
+    ///         billed fees + deploy-time seed; a cry means tariffs need
+    ///         recalibration, not a manual refill path).
     uint256 public ethLowThreshold = 0.005 ether;
+
+    /// @notice Pay-on-delivery (ADR-GAS): the service fee billed to a
+    ///         safe per served action (gas-unit based, owner-calibrated
+    ///         from live measurements; every change announced).
+    uint256 public feePerActionWei = 0.002 ether;
+
+    /// @notice The tank target: everything above it is swept into the
+    ///         fund (GasVault) as margin at the end of each action.
+    uint256 public tankTargetWei = 0.02 ether;
 
     /// @notice Minimum APY gap (WAD/yr) to move capital between pools;
     ///         below it the placement stays (gate against rate flapping).
     uint256 public minSpreadWad = 0.01e18;
 
     uint256 public rebalanceCount;
-    uint256 public totalTankedEth;
+    uint256 public feesBilled;
 
     event Rebalanced(address indexed sender, uint256 originBlockNumber, uint256 amount);
     event VaultAdded(address indexed vault);
     event VaultRemoved(address indexed vault);
-    event EthTankRefueled(uint256 needWei, uint256 marginWei);
     event ExecutorLowEth(uint256 balance, uint256 threshold);
     event VaultsRewired(address indexed assetVault, address indexed gasVault);
+    event VaultUnpaid(address indexed vault);
+    event MarginSwept(uint256 weiAmount);
+    event FeeTariffSet(uint256 feePerActionWei, uint256 tankTargetWei);
 
     error NotOwner();
     error ZeroAddress();
@@ -61,11 +75,6 @@ contract Executor is AbstractCallback {
 
     /// @dev P10: immutable address against delegatecall.
     address private immutable _original;
-
-    /// @notice Second valid callback sender — the GasPayer cashier
-    ///         (Lasna): refuelEthTank arrives from it, rebalance — from
-    ///         RulesEngine (_CALLBACK_SENDER).
-    address public immutable _GAS_PAYER_SENDER;
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert NotOwner();
@@ -79,26 +88,14 @@ contract Executor is AbstractCallback {
 
     error DelegateCallNotAllowed();
 
-    modifier onlyGasPayerSender(address sender_) {
-        if (sender_ != _GAS_PAYER_SENDER) {
-            revert CallbackNotAuthorized(sender_, _GAS_PAYER_SENDER);
-        }
-        _;
-    }
-
-    constructor(
-        address rulesEngine_,
-        IPayable callbackProxy_,
-        IExecutorVault assetVault_,
-        IGasVault gasVault_,
-        address gasPayerSender_
-    ) AbstractCallback(callbackProxy_, rulesEngine_) {
+    constructor(address rulesEngine_, IPayable callbackProxy_, IExecutorVault assetVault_, IGasVault gasVault_)
+        AbstractCallback(callbackProxy_, rulesEngine_)
+    {
         owner = msg.sender;
         vaults.push(assetVault_);
         isVault[address(assetVault_)] = true;
         emit VaultAdded(address(assetVault_));
         gasVault = gasVault_;
-        _GAS_PAYER_SENDER = gasPayerSender_;
         _original = address(this);
     }
 
@@ -136,7 +133,7 @@ contract Executor is AbstractCallback {
         emit VaultsRewired(address(0), address(gasVault_));
     }
 
-    /// @notice Thresholds are money: every retune is announced on-chain.
+    /// @notice Tariffs are money: every retune is announced on-chain.
     event EthLowThresholdSet(uint256 threshold);
     event MinSpreadSet(uint256 minSpreadWad);
 
@@ -148,6 +145,14 @@ contract Executor is AbstractCallback {
     function setMinSpread(uint256 minSpreadWad_) external onlyOwner noDelegateCall {
         minSpreadWad = minSpreadWad_;
         emit MinSpreadSet(minSpreadWad_);
+    }
+
+    /// @notice Pay-on-delivery tariff (ADR-GAS): fee per served action
+    ///         and the tank target above which margins are swept.
+    function setFeeTariff(uint256 feePerActionWei_, uint256 tankTargetWei_) external noDelegateCall onlyOwner {
+        feePerActionWei = feePerActionWei_;
+        tankTargetWei = tankTargetWei_;
+        emit FeeTariffSet(feePerActionWei_, tankTargetWei_);
     }
 
     /// @notice Rebalance: local decision at execution time. Rates are
@@ -165,11 +170,11 @@ contract Executor is AbstractCallback {
         uint256 moved = _placeCapital();
         rebalanceCount += 1;
         emit Rebalanced(sender_, originBlockNumber_, moved);
-        // Bootstrap-cry: an empty tank must be able to cry from the
-        // rebalance callback itself — refuelEthTank is unreachable while
-        // the tank is empty, so without this check the cashier would
-        // never learn about the first refill (red №1, 10.11).
-        _checkEth();
+        // Pay-on-delivery (ADR-GAS): the work is done — bill the served
+        // safes, keep the tank at target, sweep the margin into the fund.
+        _billVaults();
+        _sweepMargin();
+        _checkEth(); // a loud alarm when the tank is low (recalibrate)
     }
 
     /// @dev Multi-asset: every safe is rebalanced independently — the
@@ -226,25 +231,36 @@ contract Executor is AbstractCallback {
         }
     }
 
-    /// @notice Refill the ETH tank from the battery: needWei goes into
-    ///         the tank, marginWei into the treasury pocket (the ETH
-    ///         fund). The reserve is ETH already: no swap needed (ADR-v2).
-    function refuelEthTank(address sender_, uint256 needWei_, uint256 marginWei_)
-        external
-        noDelegateCall
-        onlyServiceProvider
-        onlyGasPayerSender(sender_)
-    {
-        if (marginWei_ > needWei_) revert BadMargin();
-        if (marginWei_ > 0) {
-            gasVault.consumeGasReserve(marginWei_);
+    /// @notice Pay-on-delivery billing: every served safe is charged
+    ///         the action fee (accrued on the safe — never a transfer
+    ///         here, a fully staked safe cannot fail to pay). A vault
+    ///         that refuses (cap, unknown selector) is skipped loudly
+    ///         and never blocks the others.
+    function _billVaults() private {
+        if (feePerActionWei == 0) {
+            return;
         }
-        if (needWei_ > 0) {
-            gasVault.releaseReserveTo(address(this), needWei_);
-            totalTankedEth += needWei_;
+        uint256 len = vaults.length;
+        for (uint256 v = 0; v < len; v++) {
+            (bool ok,) = address(vaults[v]).call(abi.encodeWithSignature("chargeFee(uint256)", feePerActionWei));
+            if (ok) {
+                feesBilled += feePerActionWei;
+            } else {
+                emit VaultUnpaid(address(vaults[v]));
+            }
         }
-        emit EthTankRefueled(needWei_, marginWei_);
-        _checkEth();
+    }
+
+    /// @dev The tank self-sustains: everything above the target is
+    ///      margin — it leaves for the fund (the REACT half is fed from
+    ///      there by the auto-faucet chain).
+    function _sweepMargin() private {
+        uint256 bal = address(this).balance;
+        if (bal > tankTargetWei) {
+            uint256 sweep = bal - tankTargetWei;
+            emit MarginSwept(sweep); // P9: the event precedes the external call
+            gasVault.treasuryIn{value: sweep}();
+        }
     }
 
     /// @notice Pay off the callback-proxy debt from the balance and lift

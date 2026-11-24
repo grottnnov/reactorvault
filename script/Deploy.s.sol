@@ -7,21 +7,19 @@ import {GasVault} from "../src/GasVault.sol";
 import {Executor, IExecutorVault} from "../src/Executor.sol";
 import {IPayable} from "reactive-lib-omni/interfaces/IPayable.sol";
 
-/// @dev The Sepolia half of the stand (ADR-v2 + ADR-EXPANSION §2): the
-///      asset safe + the battery + the executor. Env:
-///      RULES_ENGINE_ADDRESS, CALLBACK_PROXY_ADDRESS, GAS_PAYER_ADDRESS
-///      (all Lasna addresses).
+/// @dev The Sepolia half of the stand (ADR-GAS-ARCHITECTURE): the asset
+///      safe + the fund + the executor (pay-on-delivery: no cashier in
+///      the family). Env: RULES_ENGINE_ADDRESS, CALLBACK_PROXY_ADDRESS
+///      (Lasna addresses).
 contract Deploy is Script {
     function run() external returns (AssetVault vault, GasVault battery, Executor executor) {
         address rulesEngine_ = vm.envAddress("RULES_ENGINE_ADDRESS");
         address callbackProxy_ = vm.envAddress("CALLBACK_PROXY_ADDRESS");
-        address gasPayer_ = vm.envAddress("GAS_PAYER_ADDRESS");
         vm.startBroadcast();
         vault = new AssetVault();
         battery = new GasVault();
-        executor = new Executor(
-            rulesEngine_, IPayable(payable(callbackProxy_)), IExecutorVault(address(vault)), battery, gasPayer_
-        );
+        executor =
+            new Executor(rulesEngine_, IPayable(payable(callbackProxy_)), IExecutorVault(address(vault)), battery);
         vm.stopBroadcast();
     }
 }
