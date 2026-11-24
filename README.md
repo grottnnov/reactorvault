@@ -6,6 +6,12 @@ events, keeps its own gas tanks full, converts operating margin into
 reactive fuel, and is watched over by a watchdog that can never be
 silenced by a dead battery. *Set it and forget it.*
 
+This vault is the first application of the platform, deliberately
+conservative: an event-driven chassis (if-X-then-act rules on
+Reactive, per-chain executors, a gas economy that cannot die quietly).
+The next layer built on the same chassis is a **24/7 risk
+guardian for tokenized equities** — see *Status & roadmap* below.
+
 > Built for the **Reactive Omni Buildathon**, track *Set It and Forget It*.
 
 ## How it works (C4 container view)
@@ -189,10 +195,25 @@ rebalance delivered by the live callback proxy).
       pools — AavePoolAdapter + MorphoPoolAdapter on an own market, vault
       pool accounting (`balance + inPools + treasury == tracked`),
       rate-driven rebalance with a spread gate, bootstrap-cry fix
-- [ ] W3: engineering pass (event-emitting setters, P9 event ordering,
-      cooldown semantics) + family redeploy
-- [ ] Mainnet: Uniswap + Reactive Bridge adapter for the fuel loop,
-      multi-token entry
+- [ ] W3: engineering pass + gas-economy rework — "pay on delivery":
+      an action pays for itself (fees accrued as accounting entries,
+      collected at cash events — deposit, redeem, capital transit);
+      no prepaid gas pockets, no fixed % of deposits — fixed,
+      cost-based fees only (gas units × current gas price × margin);
+      a settlement buffer always stays free in the safe; an anomalous
+      fee is auto-refused by the safe itself; the treasury is split
+      into a REACT-obligations half and an execution half + family
+      redeploy
+- [ ] Mainnet (Reactive 1597): Base as the conservative retail chain,
+      Uniswap + Reactive Bridge adapter for the fuel loop, multi-token
+      entry
+- [ ] A 24/7 risk guardian on Robinhood Chain
+      (4663): tokenized equities trade around the clock while the
+      reference market sleeps. The guardian enforces drawdown bounds,
+      concentration limits, and feed-staleness pauses that hold at 3am
+      on a Sunday — same chassis, official Chainlink feeds as the data
+      source, Reactive as the reflex. Entry to that market starts at
+      $1; its on-chain automation layer is unoccupied today.
 
 ## Security
 
