@@ -154,7 +154,7 @@ contract Erc20AssetVaultTest is Test {
         uint256 sh = vault.shareOf(user);
         vm.prank(user);
         vault.redeem(sh);
-        assertEq(token.balanceOf(user), D100 - D100 / 20); // minus the 5% treasury share
+        assertEq(token.balanceOf(user), 1_000_000_000 - 5_000_000); // mint leftover 900M + 95M redeemed
     }
 
     // ------------------------------------------------------- shares (4626-lite)
