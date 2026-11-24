@@ -9,3 +9,6 @@ sensor-cron.log
 # internal ops tooling (kept locally, out of the public track)
 script/stand-sensor.sh
 script/reactive-mcp-d
+
+# internal knowledge vault (secrets-style: local only, never in git)
+internal/
