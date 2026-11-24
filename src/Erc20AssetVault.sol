@@ -18,7 +18,7 @@ interface IERC20Asset {
 ///         by strict settlement. Invariant:
 ///         tokenBalance + totalInPools + treasuryWithdrawn ≡ totalDeposited
 ///         (the treasury is not subtracted — it stays in the safe's balance).
-///         P5: withdrawAll is MVP scaffolding (per-user accounting — G15).
+///         P5: the former MVP owner sweep (withdrawAll) is removed (22.11).
 ///         P10: noDelegateCall on every entry point. Ether is not
 ///         accepted: the contract is not payable.
 contract Erc20AssetVault {
@@ -284,23 +284,9 @@ contract Erc20AssetVault {
         }
     }
 
-    /// @notice MVP scaffolding: a full return to the owner (all pools
-    ///         recalled first). The treasury leaves together with the
-    ///         working capital.
-    function withdrawAll() external onlyOwner noDelegateCall notRecalling {
-        uint256 len = poolAdapters.length;
-        for (uint256 i = 0; i < len; i++) {
-            address adapter = poolAdapters[i];
-            if (inPoolOf[adapter] > 0) {
-                _recall(adapter, inPoolOf[adapter]);
-            }
-        }
-        uint256 amount = token.balanceOf(address(this));
-        totalDeposited = 0;
-        treasuryTaken = 0;
-        emit Withdrawn(owner, amount); // P9: the event precedes the external call
-        _safeTransfer(owner, amount);
-    }
+    /// @dev The former MVP owner sweep (withdrawAll) is REMOVED
+    ///      (decision 22.11): the exit is redeem — per-user, always
+    ///      works, recalls from pools itself.
 
     function _recall(address adapter_, uint256 amount_) private {
         emit RecalledFromPool(adapter_, amount_);

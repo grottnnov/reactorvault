@@ -129,20 +129,13 @@ contract AssetVaultTest is Test {
         caller.callDeposit(address(vault));
     }
 
-    /// withdrawAll: MVP sweep — the client always has an exit.
-    function testWithdrawAllSweeps() public {
-        vm.prank(alice);
-        vault.setTreasuryBps(500);
+    /// The MVP owner sweep is REMOVED (22.11): the exit is redeem —
+    /// a privileged full-sweep must no longer exist on the safe.
+    function testOwnerSweepIsGone() public {
         _deposit(1 ether);
-        uint256 ownerBefore = alice.balance;
-
         vm.prank(alice);
-        vault.withdrawAll();
-
-        assertEq(alice.balance, ownerBefore + 0.95 ether);
-        assertEq(vault.totalDeposited(), 0);
-        assertEq(vault.treasurySent(), 0);
-        assertEq(address(vault).balance, 0);
+        (bool ok,) = address(vault).call(abi.encodeWithSignature("withdrawAll()"));
+        assertFalse(ok, "the sweep selector must not resolve");
     }
 
     // ---------------------------------------------------------------
@@ -221,23 +214,23 @@ contract AssetVaultTest is Test {
         vault.authorizePoolAdapter(address(pool));
     }
 
-    /// The client's exit always works: withdrawAll recalls every pool
-    /// before sweeping.
-    function testWithdrawAllRecallsFromPools() public {
+    /// The client's exit always works: a FULL redeem recalls every pool
+    /// before paying out (the former sweep's promise, now per-user).
+    function testFullRedeemRecallsEveryPoolAndEmpties() public {
         MockPool pool = _adapter();
         _deposit(1 ether);
         _deploy(address(pool), 1 ether); // all-in
         assertEq(address(vault).balance, 0);
         uint256 ownerBefore = alice.balance;
-
+        uint256 sh = vault.shareOf(alice); // read BEFORE the prank (it would consume it)
         vm.prank(alice);
-        vault.withdrawAll();
+        vault.redeem(sh);
 
-        assertEq(alice.balance, ownerBefore + 1 ether, "owner got everything");
+        assertEq(alice.balance, ownerBefore + 1 ether, "user got everything");
         assertEq(pool.totalSupplied(), 0, "pool empty");
         assertEq(vault.inPoolOf(address(pool)), 0);
         assertEq(address(vault).balance, 0);
-        _invariant("after withdrawAll");
+        _invariant("after redeem");
     }
 
     /// Donation policy unchanged outside the settlement window: a

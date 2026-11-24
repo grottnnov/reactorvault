@@ -354,31 +354,13 @@ contract AssetVault is IAssetVault {
         amount = totalDeposited - totalInPools(); // ledger: no donations by construction
     }
 
-    /// @notice MVP scaffolding: a full sweep to the owner. Recalls
-    ///         every pool first (the client's exit always works, at the
-    ///         speed of pool liquidity). Known debt: per-user balances
-    ///         do not exist yet (G15/W3); must not survive the arrival
-    ///         of third-party deposits.
-    function withdrawAll() external onlyOwner noDelegateCall {
-        uint256 len = poolAdapters.length;
-        for (uint256 i = 0; i < len; i++) {
-            address adapter = poolAdapters[i];
-            if (inPoolOf[adapter] > 0) {
-                _recall(adapter, inPoolOf[adapter]);
-            }
-        }
-        uint256 amount = address(this).balance;
-        totalDeposited = 0;
-        treasurySent = 0;
-        emit Withdrawn(owner, amount); // P9: the event precedes the external call
-        (bool ok,) = owner.call{value: amount}("");
-        if (!ok) revert TransferFailed();
-    }
-
     /// @dev Direct transfers are denied (donation policy — G15: the
     ///      invariant must not drift; a deposit is an explicit call).
     ///      The single exception is the _recalling window: pool adapters
     ///      pay their withdrawal back to the safe inside the call.
+    ///      The former MVP owner sweep (withdrawAll) is REMOVED
+    ///      (decision 22.11): the exit is redeem — per-user, always
+    ///      works, recalls from pools itself.
     receive() external payable {
         if (!_recalling) revert DonationsNotAllowed();
     }

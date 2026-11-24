@@ -74,27 +74,14 @@ contract Erc20AssetVaultTest is Test {
     /// changes (deposit → deploy → recall → withdrawAll); a separate
     /// empty test is not needed.
 
-    /// withdrawAll: returns EVERYTHING (working + treasury) to the
-    /// owner, the ledger zeroes out — "an exit that always works".
-    function testWithdrawAllReturnsEverything() public {
-        vm.prank(vault.owner());
-        vault.setTreasuryBps(500);
+    /// The MVP owner sweep is REMOVED (22.11): the exit is redeem —
+    /// a privileged full-sweep must no longer exist on the safe.
+    function testOwnerSweepIsGone() public {
         vm.prank(user);
         vault.deposit(D100);
-
         vm.prank(vault.owner());
-        vault.withdrawAll();
-        assertEq(token.balanceOf(vault.owner()), D100, "owner got all 100 USDC");
-        assertEq(token.balanceOf(address(vault)), 0);
-        assertEq(vault.totalDeposited(), 0);
-        assertEq(vault.treasuryTaken(), 0);
-    }
-
-    /// withdrawAll — owner only.
-    function testWithdrawAllOnlyOwner() public {
-        vm.prank(stranger);
-        vm.expectRevert(Erc20AssetVault.NotOwner.selector);
-        vault.withdrawAll();
+        (bool ok,) = address(vault).call(abi.encodeWithSignature("withdrawAll()"));
+        assertFalse(ok, "the sweep selector must not resolve");
     }
 
     /// deployToPool: executor only; a stranger address — revert.
@@ -161,9 +148,13 @@ contract Erc20AssetVaultTest is Test {
         assertEq(vault.inPoolOf(address(adapter)), 0);
         assertEq(token.balanceOf(address(vault)), D100, "recalled back");
 
-        vm.prank(vault.owner());
-        vault.withdrawAll();
-        assertEq(token.balanceOf(vault.owner()), D100);
+        // the exit is redeem now (the owner sweep is gone): the user
+        // burns their shares and takes their working capital back
+        // (the 5% treasury share stays in the safe — G15 accounting)
+        uint256 sh = vault.shareOf(user);
+        vm.prank(user);
+        vault.redeem(sh);
+        assertEq(token.balanceOf(user), D100 - D100 / 20); // minus the 5% treasury share
     }
 
     // ------------------------------------------------------- shares (4626-lite)
