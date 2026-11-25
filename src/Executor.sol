@@ -4,6 +4,8 @@ pragma solidity ^0.8.29;
 import {IAssetVault} from "./AssetVault.sol";
 import {IGasVault} from "./GasVault.sol";
 import {IPoolAdapter} from "./IPoolAdapter.sol";
+import {IGuardVault, GuardMsg} from "./IGuardVault.sol";
+import {IAggregatorV3} from "./IAggregatorV3.sol";
 import {AbstractCallback} from "reactive-lib-omni/base/AbstractCallback.sol";
 import {IPayable} from "reactive-lib-omni/interfaces/IPayable.sol";
 
@@ -57,6 +59,41 @@ contract Executor is AbstractCallback {
 
     uint256 public rebalanceCount;
     uint256 public feesBilled;
+
+    // ------------------------------------------------------------------
+    // Guard vertical (ADR-GUARD-RULES, 25.11): the brain computes WHEN
+    // (price history), THIS contract verifies NOW — freshness and the
+    // exit bound against the live feed — then acts through the guard
+    // safe. Pay-on-delivery: only a real swap is billed.
+    // ------------------------------------------------------------------
+
+    uint8 public constant GUARD_TRIM = 1;
+    uint8 public constant GUARD_EXIT = 2;
+    uint8 public constant GUARD_REBUY = 3;
+    uint8 public constant GUARD_PAUSE = 4;
+    uint8 public constant GUARD_RESUME = 5;
+
+    /// @dev Skip reasons: 1 stale/sane answer, 2 paused, 3 recovered.
+    uint8 public constant GUARD_SKIP_STALE = 1;
+    uint8 public constant GUARD_SKIP_PAUSED = 2;
+    uint8 public constant GUARD_SKIP_RECOVERED = 3;
+
+    /// @notice Feed freshness bound at execution time (the brain has
+    ///         its own per-rule bound; this is the second echelon).
+    uint64 public guardMaxStalenessSec = 900;
+
+    mapping(address => address) public guardVaultOf; // asset → guard safe
+    mapping(address => bool) public guardPaused; // asset → pause flag
+
+    event GuardVaultAdded(address indexed asset, address indexed vault);
+    event GuardPolicySet(uint64 maxStalenessSec);
+    event GuardActed(uint8 indexed kind, address indexed asset, uint256 price, uint256 amountIn, uint256 amountOut);
+    event GuardSkipped(uint8 indexed kind, address indexed feed, address indexed asset, uint8 reason);
+    event GuardPaused(address indexed asset, address indexed feed);
+    event GuardResumed(address indexed asset, address indexed feed);
+
+    error GuardNotConfigured();
+    error BadGuardKind();
 
     event Rebalanced(address indexed sender, uint256 originBlockNumber, uint256 amount);
     event VaultAdded(address indexed vault);
@@ -153,6 +190,109 @@ contract Executor is AbstractCallback {
         feePerActionWei = feePerActionWei_;
         tankTargetWei = tankTargetWei_;
         emit FeeTariffSet(feePerActionWei_, tankTargetWei_);
+    }
+
+    /// @notice Guard registry: the two-sided safe of an asset. The
+    ///         pool safes above stay untouched — the guard vertical
+    ///         is a separate family member list.
+    function addGuardVault(address asset_, address vault_) external onlyOwner noDelegateCall {
+        if (asset_ == address(0) || vault_ == address(0)) revert ZeroAddress();
+        guardVaultOf[asset_] = vault_;
+        emit GuardVaultAdded(asset_, vault_);
+    }
+
+    function setGuardStaleness(uint64 maxStalenessSec_) external onlyOwner noDelegateCall {
+        guardMaxStalenessSec = maxStalenessSec_;
+        emit GuardPolicySet(maxStalenessSec_);
+    }
+
+    /// @notice The guard entry point. The brain computed WHEN from
+    ///         price history; THIS re-verifies NOW: the feed answer is
+    ///         positive and fresh (staleness), the pause flag is down,
+    ///         and for EXIT the live price is still at/below the
+    ///         trigger bound (between the reaction and the delivery
+    ///         the price may have recovered — then a quiet skip, the
+    ///         "rates re-checked locally" canon). PAUSE/RESUME are
+    ///         about the feed itself: no freshness check, no bill.
+    function guardAction(GuardMsg calldata m_)
+        external
+        noDelegateCall
+        onlyServiceProvider
+        onlyCallbackSender(m_.sender)
+    {
+        if (m_.kind == GUARD_PAUSE) {
+            guardPaused[m_.asset] = true;
+            emit GuardPaused(m_.asset, m_.feed);
+            return;
+        }
+        if (m_.kind == GUARD_RESUME) {
+            guardPaused[m_.asset] = false;
+            emit GuardResumed(m_.asset, m_.feed);
+            return;
+        }
+        if (m_.kind != GUARD_TRIM && m_.kind != GUARD_EXIT && m_.kind != GUARD_REBUY) revert BadGuardKind();
+        if (guardPaused[m_.asset]) {
+            emit GuardSkipped(m_.kind, m_.feed, m_.asset, GUARD_SKIP_PAUSED);
+            return;
+        }
+
+        (uint256 price, uint8 skipReason) = _verifyFeed(m_.feed, m_.kind, m_.bound);
+        if (skipReason != 0) {
+            emit GuardSkipped(m_.kind, m_.feed, m_.asset, skipReason);
+            return;
+        }
+
+        address vault = guardVaultOf[m_.asset];
+        if (vault == address(0)) revert GuardNotConfigured();
+
+        uint256 inAmt;
+        uint256 outAmt;
+        if (m_.kind == GUARD_TRIM) {
+            (inAmt, outAmt) = IGuardVault(vault).guardTrim(m_.param, m_.param2);
+        } else if (m_.kind == GUARD_EXIT) {
+            (inAmt, outAmt) = IGuardVault(vault).guardExit(m_.param);
+        } else {
+            (inAmt, outAmt) = IGuardVault(vault).guardRebuy(m_.param, m_.param2);
+        }
+
+        if (inAmt == 0 && outAmt == 0) {
+            return; // inside the band: a no-op is not a served action
+        }
+
+        // P9: the causal-feed event precedes the external billing call.
+        emit GuardActed(m_.kind, m_.asset, price, inAmt, outAmt);
+
+        // Pay-on-delivery (ADR-GAS): bill the served safe only.
+        (bool ok,) = vault.call(abi.encodeWithSignature("chargeFee(uint256)", feePerActionWei));
+        if (ok) {
+            feesBilled += feePerActionWei;
+        } else {
+            emit VaultUnpaid(vault);
+        }
+        _sweepMargin();
+        _checkEth();
+    }
+
+    /// @dev The feed re-verification, isolated: the 5-value
+    ///      latestRoundData destructure lives in a small frame.
+    ///      Returns (price, 0) when the action may proceed, else
+    ///      (0, skipReason).
+    function _verifyFeed(address feed_, uint8 kind_, uint256 bound_)
+        private
+        view
+        returns (uint256 price, uint8 skipReason)
+    {
+        (, int256 answer,, uint256 updatedAt,) = IAggregatorV3(feed_).latestRoundData();
+        if (answer <= 0) {
+            return (0, GUARD_SKIP_STALE);
+        }
+        if (block.timestamp > updatedAt + guardMaxStalenessSec) {
+            return (0, GUARD_SKIP_STALE);
+        }
+        if (kind_ == GUARD_EXIT && uint256(answer) > bound_) {
+            return (0, GUARD_SKIP_RECOVERED);
+        }
+        return (uint256(answer), 0);
     }
 
     /// @notice Rebalance: local decision at execution time. Rates are
