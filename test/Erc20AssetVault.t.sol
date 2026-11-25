@@ -20,7 +20,7 @@ contract Erc20AssetVaultTest is Test {
     uint256 constant D10 = 10_000_000;
 
     function setUp() public {
-        token = new MockERC20();
+        token = new MockERC20("USDC", 6);
         vault = new Erc20AssetVault(IERC20Asset(address(token)));
         token.mint(user, 1_000_000_000); // 1000 USDC
         vm.prank(user);

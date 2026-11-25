@@ -1,12 +1,18 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.29;
 
-/// @dev A minimal ERC-20 for the USDC safe's unit tests (6 decimals,
-///      like the real USDC). Only what the tests need: mint by anyone,
-///      transfer/transferFrom/approve without surprises.
+/// @dev A minimal ERC-20 for the safe unit tests. Defaults match USDC
+///      (6 decimals); the guard tests parametrize it (18-dec stock
+///      token, 6-dec stable). Only what the tests need: mint by
+///      anyone, transfer/transferFrom/approve without surprises.
 contract MockERC20 {
-    string public constant symbol = "USDC";
-    uint8 public constant decimals = 6;
+    string public symbol;
+    uint8 public decimals;
+
+    constructor(string memory symbol_, uint8 decimals_) {
+        symbol = symbol_;
+        decimals = decimals_;
+    }
 
     mapping(address => uint256) public balanceOf;
     mapping(address => mapping(address => uint256)) public allowance;
