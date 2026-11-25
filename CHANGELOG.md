@@ -3,6 +3,46 @@
 All notable changes to ReactorVault. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 the contract family has no releases yet — versions name stand generations.
 
+## [Unreleased] — the guard rules and the two-sided safe (25.11, ADR-GUARD-RULES)
+
+The Robinhood risk guardian lands in the code: the brain computes WHEN from
+price history, the executor verifies NOW against the live feed, the
+guard safe computes HOW MUCH and swaps. Decision record:
+`ADR-GUARD-RULES` (internal).
+
+### Added
+- **Guard rules in the brain** (RulesEngine): per-feed rules keyed by
+  (chainId, emitter) — the idempotency key gains the emitter so two
+  feeds in one block no longer swallow each other. The anchor is
+  `max(entry, HWM)`: one mechanism gives both capital protection and
+  the trailing floor; three rungs from the anchor (warn → trim to
+  target share, mid → exit half, hard → exit all). Deepening bypasses
+  the cooldown, the rebuy gate is cooldown-gated; a staleness patrol on
+  any non-feed event pauses a silent feed once per episode, the fresh
+  `AnswerUpdated` resumes it.
+- **`guardAction` in the executor**: re-verification at execution time
+  — answer positive, freshness within `guardMaxStalenessSec`, pause
+  flag down, EXIT bound still crossed (a recovered price is a quiet
+  skip). Acts through the guard safe, bills pay-on-delivery ONLY a
+  real swap.
+- **GuardVault — the two-sided safe** (stock + stable): share math on
+  real decimals (asset 18, stable 6, feed 8), band no-ops, exact-
+  allowance swap transits with a minOut slippage bound (a silent bad
+  fill is worse than a paid revert). The executor is the immutable
+  guard pair; fees accrue and settle out of the stable side; the exit
+  always works (bounded settlement, failure defers, never blocks).
+- **`ISwapAdapter`** (the exchange plugin interface, ADR-EXPANSION §4)
+  and **`IAggregatorV3`** (minimal Chainlink view for re-verification).
+- **`deployments.json`** — the machine-readable single source of truth
+  for addresses and event topic0 (agent-facing: events are the push
+  channel). Guarded by `DeploymentsManifestTest`: schema and
+  public-artifact hygiene offline, live cross-check with RPC vars.
+- **`script/feed-registry.sh`**: joins the official Chainlink RDD with
+  the Robinhood asset registry, live-verifies every pair on 4663
+  (token symbol, feed description, positive answer), measures cadence
+  by walking the feeds' own round history (the 4663 RPC's address-
+  filtered getLogs is silently empty).
+
 ## [Unreleased] — pay-on-delivery gas economy (24.11, ADR-GAS)
 
 The prepaid client pocket and the cashier refuel circuit are gone: an
