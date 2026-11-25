@@ -1,20 +1,43 @@
 # ReactorVault
 
-**A self-healing personal vault on [Reactive Network](https://reactive.network).**
-Deposit native ETH once — the vault runs itself: it reacts to on-chain
-events, keeps its own gas tanks full, converts operating margin into
-reactive fuel, and is watched over by a watchdog that can never be
-silenced by a dead battery. *Set it and forget it.*
+**A 24/7 risk guardian for tokenized equities on Robinhood Chain,
+built on [Reactive Network](https://reactive.network).** Tokenized
+equities trade around the clock while the reference market sleeps —
+a position needs a guard that never sleeps. *Set it and forget it.*
 
-This vault is the first application of the platform, deliberately
-conservative: an event-driven chassis (if-X-then-act rules on
-Reactive, per-chain executors, a gas economy that cannot die quietly).
-The next layer built on the same chassis is a **24/7 risk
-guardian for tokenized equities** — see *Status & roadmap* below.
+The project grew one layer at a time: a watchdog patrol that keeps
+the system alive, a self-healing vault economy that pays its own
+gas, and now the risk guardian — the brain computes WHEN from price
+history, the executor verifies NOW against the live feed, the guard
+safe decides HOW MUCH. The vault stand (Lasna + Sepolia, live since
+19.11) is the chassis economy the guardian runs on.
 
 > Built for the **Reactive Omni Buildathon**, track *Set It and Forget It*.
 
-## How it works (C4 container view)
+## The risk guardian (Robinhood Chain, 4663)
+
+The guard slice reuses the platform's chassis on the equity chain:
+
+- **The brain computes WHEN** — guard rules per feed keyed by
+  (chainId, emitter); the anchor is `max(entry, HWM)` — capital
+  protection and the trailing floor in one mechanism — with three
+  rungs from it: warn → trim to the target share, mid → exit half,
+  hard → exit all. Deepening bypasses the cooldown; a stale feed
+  pauses the rule and a fresh answer resumes it.
+- **The executor verifies NOW** — at delivery it re-checks the live
+  feed answer, freshness, the pause flag and the EXIT bound; a
+  recovered price is a quiet skip, not a paid panic.
+- **The guard safe decides HOW MUCH** — `GuardVault`, the two-sided
+  safe (stock + stable, real decimals), band no-ops, bounded swaps
+  with a minOut slippage guard; the exit always works.
+- **The feed registry** (`script/feed-registry.sh`) joins the
+  official Chainlink RDD with the Robinhood asset registry and
+  live-verifies every pair on 4663.
+
+The 4663 mainnet stand (Reactive 1597 brain + Robinhood executor and
+safes) is the next step — see `deployments.json` ("main").
+
+## The chassis: how it works (C4 container view)
 
 ```
                     Sepolia (destination chain)                Reactive Lasna (reactive chain)
@@ -81,6 +104,7 @@ depot autonomously.
 | `AssetVault` | `src/AssetVault.sol` | Sepolia | ETH safe: free entry, accrued fees, hard cap, settlement buffer, invariant accounting |
 | `GasVault` | `src/GasVault.sol` | Sepolia | the fund: margin intake, buyer pulls (spend ≤ earned), invariant treasury ≡ balance |
 | `Executor` | `src/Executor.sol` | Sepolia | callback receiver: rebalance + per-action billing + margin sweep (brain is the only sender) |
+| `GuardVault` | `src/GuardVault.sol` | Robinhood 4663 | the two-sided guard safe (stock + stable): real-decimals share math, band no-ops, bounded swaps, the exit always works |
 | `AavePoolAdapter` / `MorphoPoolAdapter` | `src/adapters/` | Sepolia | pool plugins (IPoolAdapter); capital transits through the safe |
 | `OneToOneOracle` | `src/OneToOneOracle.sol` | Sepolia | fixed 1:1 rate source for the demo market |
 | `FuelBuyer` | `src/FuelBuyer.sol` | Sepolia | pulls purchase funds from the fund itself → faucet/DEX → lREACT to the depot |
@@ -198,6 +222,10 @@ rebalance delivered by the live callback proxy).
       pools — AavePoolAdapter + MorphoPoolAdapter on an own market, vault
       pool accounting (`balance + inPools + treasury == tracked`),
       rate-driven rebalance with a spread gate, bootstrap-cry fix
+- [x] The risk guardian in code (25.11): guard rules in the brain,
+      the two-sided guard safe and the Robinhood feed registry (see
+      *The risk guardian* above) — the 4663 mainnet stand is the next
+      step (planned 28-30.11)
 - [ ] W3: engineering pass + gas-economy rework — "pay on delivery":
       an action pays for itself (fees accrued as accounting entries,
       collected at cash events — deposit, redeem, capital transit);
@@ -210,13 +238,6 @@ rebalance delivered by the live callback proxy).
 - [ ] Mainnet (Reactive 1597): Base as the conservative retail chain,
       Uniswap + Reactive Bridge adapter for the fuel loop, multi-token
       entry
-- [ ] A 24/7 risk guardian on Robinhood Chain
-      (4663): tokenized equities trade around the clock while the
-      reference market sleeps. The guardian enforces drawdown bounds,
-      concentration limits, and feed-staleness pauses that hold at 3am
-      on a Sunday — same chassis, official Chainlink feeds as the data
-      source, Reactive as the reflex. Entry to that market starts at
-      $1; its on-chain automation layer is unoccupied today.
 
 ## Security
 
