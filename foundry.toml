@@ -6,6 +6,7 @@ solc_version = "0.8.29"
 optimizer = true
 optimizer_runs = 200
 via_ir = false
+fs_permissions = [{ access = "read", path = "./deployments.json" }]
 
 [profile.default.fuzz]
 runs = 256

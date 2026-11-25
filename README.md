@@ -89,22 +89,20 @@ depot autonomously.
 | `ReliefFund` | `src/ReliefFund.sol` | Lasna | fuel depot: ward registry, real-number feeding, horizon alerts |
 | `Watchdog` | `src/Watchdog.sol` | Lasna/Reactive | cron patrol + cry relay, zero idle cost |
 
-### Live testnet stand (checked 19.11 — the W2.2 generation; superseded by the W3 pay-on-delivery family at the next redeploy)
+### Live testnet stand (checked 25.11 — the W2.2 generation; superseded by the W3 pay-on-delivery family at the next redeploy)
 
-| Contract | Chain | Address |
-|---|---|---|
-| RulesEngine (subscribe hatch, 1.2M callback gas) | Lasna | `0x0D05bDab2480e2c915A8aE4ACaD30B17c66B1cFA` |
-| GasPayer v2.1 (executor rewirable) | Lasna | `0xfccf439DAB2a4dcE34E2FAabdB395EEB4C2ed0ef` |
-| ReliefFund (fund4, ward registry) | Lasna | `0x55cE527bd6962f2ec492980C7269f595323a9EaE` |
-| Watchdog v6 | Lasna | `0x479ea63Ff2DFc4C553611BE0d87445EFf2C62136` |
-| FuelConverter v3 (auto-faucet brain) | Lasna | `0x63ae2563BE276A896A9D2E1E318b43426dE32A15` |
-| AssetVault (safe, live) | Sepolia | `0x49D76fc16130DEe93c2BE760e2FBcdEe8765fa15` |
-| Executor v2 | Sepolia | `0xE6507Cad930C899DDBe4af2d211823e1e1e196E2` |
-| GasVault (battery) | Sepolia | `0xF72f7cdAD29fE63c9Bf9E3a753f625958D84a199` |
-| FuelBuyer v2 | Sepolia | `0xAD9a56E4ac63502952aBE9873D3BbbA25b56EA88` |
-| OneToOneOracle | Sepolia | `0x69fFF7C44763918C0399991928F421654AF21D7A` |
-| AavePoolAdapter (WETH) | Sepolia | `0x11809F0a5bd83516B9f73f1b94dB3227D73368d0` |
-| MorphoPoolAdapter (own WETH/WETH market) | Sepolia | `0x5312A8A0C307B0318320FB77b0C24AC7a8a40EE3` |
+All deployed addresses, chain endpoints and the event topic0 index live in
+**`deployments.json`** — the machine-readable single source of truth. It is
+kept honest by `test/DeploymentsManifest.t.sol`: schema and public-artifact
+hygiene offline, and a live cross-check (with `LASNA_RPC`/`SEPOLIA_RPC` set)
+that every address has code and its role getter answers. This README never
+duplicates it — two copies of a fact drift apart, and an agent trusts the
+stale copy.
+
+For agents, the `events` section of the manifest is the push channel:
+subscribe to a topic0 on the contract's chain and you learn about `LowGas`,
+`Rebalanced` or `VaultUnpaid` before any dashboard renders them. All state is
+public on-chain — no API keys, no auth.
 
 End-to-end proof (deploy-day loop, tx hashes in the buildathon
 evidence): a deposit → the brain reacts (Lasna) → callback → the
@@ -119,8 +117,9 @@ a 1% APY spread.
 # 1. Build and test (Foundry; unit + invariant suites, no RPC needed)
 git clone --recurse-submodules https://github.com/grottnnov/reactorvault
 cd reactorvault
-forge build && forge test          # 185 tests + 6 fork tests
+forge build && forge test          # 190 passed offline + 7 RPC-gated live checks
 SEPOLIA_RPC_URL=… forge test --match-path 'test/fork/*'   # fork suite vs live Sepolia (optional)
+LASNA_RPC=… SEPOLIA_RPC=… forge test --match-contract DeploymentsManifestTest   # manifest vs live chains
 
 # 2. Faucets: Lasna lREACT (https://dev.reactive.network) + Sepolia ETH.
 #    Fund one deployer EOA on both chains.

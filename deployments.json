@@ -1,0 +1,312 @@
+{
+  "manifestVersion": 1,
+  "name": "reactorvault",
+  "description": "Non-custodial on-chain risk guardian. The owner sets boundaries (drawdown floor, concentration cap, stale-feed pause); a reactive contract watches price feeds around the clock and an executor enforces the rules on-chain. Contracts and events are the whole interface - no UI dependency, machine-native by construction.",
+  "updated": "2026-11-25",
+  "howToUse": {
+    "contracts": "Every deployed family member with chain, address, generation and role. Verify with eth_getCode before use - never trust an address without asking the chain.",
+    "events": "Push channel: subscribe to topic0 on the contract's chain and you learn about alarms and actions before any human dashboard renders them. All state is public on-chain, no auth, no API keys.",
+    "generations": "w2.2 is the live testnet stand (the chassis economy pilot); w3 is the pay-on-delivery family (deploy pending); main is the Robinhood risk guardian (planned)."
+  },
+  "chains": {
+    "5318007": {
+      "name": "Reactive Lasna (testnet)",
+      "rpc": "https://lasna-rpc.rnk.dev",
+      "explorer": "https://reactscan.io"
+    },
+    "11155111": {
+      "name": "Ethereum Sepolia (testnet)",
+      "rpc": "https://ethereum-sepolia-rpc.publicnode.com",
+      "explorer": "https://eth-sepolia.blockscout.com"
+    },
+    "1597": {
+      "name": "Reactive (mainnet)",
+      "rpc": "https://mainnet-rpc.rnk.dev",
+      "explorer": "https://reactscan.io",
+      "status": "planned"
+    },
+    "4663": {
+      "name": "Robinhood Chain (mainnet)",
+      "rpc": "https://rpc.mainnet.chain.robinhood.com",
+      "explorer": "https://robinhoodchain.blockscout.com",
+      "status": "planned"
+    }
+  },
+  "generations": {
+    "w2.2": "The live testnet stand (deployed 19.11). Superseded by the w3 pay-on-delivery family at the next redeploy; keeps running as the chassis economy stand.",
+    "w3": "Pay-on-delivery family (ADR-GAS): accrued fees, fee cap = auto-refuse, two-sided fund, per-action billing. Deploy rehearsed dry; live deploy pending.",
+    "main": "The Robinhood Chain guardian: Reactive 1597 brain + Robinhood 4663 executor and stock-token safes. Planned 28-30.11."
+  },
+  "contracts": [
+    {
+      "name": "RulesEngine",
+      "role": "brain",
+      "chainId": 5318007,
+      "address": "0x0D05bDab2480e2c915A8aE4ACaD30B17c66B1cFA",
+      "generation": "w2.2",
+      "status": "live",
+      "description": "Event rules to callbacks: subscriptions, cooldowns, idempotency. The only sender the executor accepts."
+    },
+    {
+      "name": "GasPayer",
+      "role": "cashier (retired)",
+      "chainId": 5318007,
+      "address": "0xfccf439DAB2a4dcE34E2FAabdB395EEB4C2ed0ef",
+      "generation": "w2.2",
+      "status": "conserved",
+      "description": "Superseded by pay-on-delivery (ADR-GAS). Silent by construction; no client funds ever passed through it."
+    },
+    {
+      "name": "ReliefFund",
+      "role": "depot",
+      "chainId": 5318007,
+      "address": "0x55cE527bd6962f2ec492980C7269f595323a9EaE",
+      "generation": "w2.2",
+      "status": "live",
+      "description": "Fuel depot: ward registry, real-number feeding, horizon alerts, debt revival.",
+      "semantics": "wardCount()"
+    },
+    {
+      "name": "Watchdog",
+      "role": "dog",
+      "chainId": 5318007,
+      "address": "0x479ea63Ff2DFc4C553611BE0d87445EFf2C62136",
+      "generation": "w2.2",
+      "status": "live",
+      "description": "Cron patrol and cry relay, zero idle cost.",
+      "semantics": "lastPulseBlock()"
+    },
+    {
+      "name": "FuelConverter",
+      "role": "auto-crane brain",
+      "chainId": 5318007,
+      "address": "0x63ae2563BE276A896A9D2E1E318b43426dE32A15",
+      "generation": "w2.2",
+      "status": "live",
+      "description": "Listens to the depot horizon, places fuel purchase orders."
+    },
+    {
+      "name": "AssetVault",
+      "role": "safe",
+      "chainId": 11155111,
+      "address": "0x49D76fc16130DEe93c2BE760e2FBcdEe8765fa15",
+      "generation": "w2.2",
+      "status": "live",
+      "description": "ETH safe: free entry, accrued fees, fee cap = auto-refuse, invariant accounting. Withdraw always works, in any system state.",
+      "semantics": "totalDeposited()"
+    },
+    {
+      "name": "Executor",
+      "role": "executor",
+      "chainId": 11155111,
+      "address": "0xE6507Cad930C899DDBe4af2d211823e1e1e196E2",
+      "generation": "w2.2",
+      "status": "live",
+      "description": "Callback receiver: rebalance + billing. v3 adds per-action billing and margin sweep; deploy pending.",
+      "semantics": "rebalanceCount()"
+    },
+    {
+      "name": "GasVault",
+      "role": "fund",
+      "chainId": 11155111,
+      "address": "0xF72f7cdAD29fE63c9Bf9E3a753f625958D84a199",
+      "generation": "w2.2",
+      "status": "live",
+      "description": "Two-sided treasury: earned/spent counters, buyer pulls limited to earned, invariant treasury = balance.",
+      "semantics": "treasury()"
+    },
+    {
+      "name": "FuelBuyer",
+      "role": "buyer",
+      "chainId": 11155111,
+      "address": "0xAD9a56E4ac63502952aBE9873D3BbbA25b56EA88",
+      "generation": "w2.2",
+      "status": "live",
+      "description": "Pulls purchase funds from the fund itself, buys fuel, delivers it to the depot."
+    },
+    {
+      "name": "OneToOneOracle",
+      "role": "oracle (demo)",
+      "chainId": 11155111,
+      "address": "0x69fFF7C44763918C0399991928F421654AF21D7A",
+      "generation": "w2.2",
+      "status": "live",
+      "description": "Fixed 1:1 rate source for the demo market."
+    },
+    {
+      "name": "AavePoolAdapter",
+      "role": "pool adapter",
+      "chainId": 11155111,
+      "address": "0x11809F0a5bd83516B9f73f1b94dB3227D73368d0",
+      "generation": "w2.2",
+      "status": "live",
+      "description": "Aave v3 WETH pool plugin (IPoolAdapter); capital transits through the safe."
+    },
+    {
+      "name": "MorphoPoolAdapter",
+      "role": "pool adapter",
+      "chainId": 11155111,
+      "address": "0x5312A8A0C307B0318320FB77b0C24AC7a8a40EE3",
+      "generation": "w2.2",
+      "status": "live",
+      "description": "Morpho market plugin (IPoolAdapter); capital transits through the safe."
+    }
+  ],
+  "events": [
+    {
+      "name": "LowGas(uint256,uint256)",
+      "contract": "RulesEngine",
+      "chainId": 5318007,
+      "topic0": "0xe99dff165a87cf9da2fcd88b6354aa5b8cd7f450ef979d44a2cee16e6417d836",
+      "meaning": "The brain's reactive-gas reserve fell below target: recalibrate tariffs (there is no refill circuit)."
+    },
+    {
+      "name": "ExecutorLowEth(uint256,uint256)",
+      "contract": "Executor",
+      "chainId": 11155111,
+      "topic0": "0x93c489de073a5d827b45b4e14646a1dadf5e2be50f96dfaededb2ed95e317930",
+      "meaning": "The executor's ETH tank is below threshold: callback delivery at risk."
+    },
+    {
+      "name": "HorizonAlert(uint256,uint256,uint256,uint8)",
+      "contract": "ReliefFund",
+      "chainId": 5318007,
+      "topic0": "0x3281184b60902b5a4ced3645bebc051413971de4b5975765aefc78d0e8dda225",
+      "meaning": "Fuel horizon warning: days of feeding left at the current burn rate."
+    },
+    {
+      "name": "LowFund(uint256,uint256)",
+      "contract": "ReliefFund",
+      "chainId": 5318007,
+      "topic0": "0x1c76b1eb5db7fa5763cebf51d38f1cddbc2b3c129bcb46a785535947132532cb",
+      "meaning": "Depot reserve below floor."
+    },
+    {
+      "name": "RuleSet(bytes32,uint256,uint256,bool,uint64)",
+      "contract": "RulesEngine",
+      "chainId": 5318007,
+      "topic0": "0xa273342583fc96f7996963be3b79b7d5bded50aecce3e1e2740bee5dc97aff8f",
+      "meaning": "A rule was configured: (chain, topic0, active, cooldown)."
+    },
+    {
+      "name": "RuleFired(uint256,uint256,uint256)",
+      "contract": "RulesEngine",
+      "chainId": 5318007,
+      "topic0": "0x52b23e4c265ed610676f71e03d1577f51b80a63bf477a7b28e6da0ff0fdf4b4b",
+      "meaning": "The brain reacted to an origin event and dispatched a callback."
+    },
+    {
+      "name": "Subscribed(uint256,address,uint256)",
+      "contract": "RulesEngine",
+      "chainId": 5318007,
+      "topic0": "0xad24110dc4e3726555debcc81d3781cc9bc21a42b15c56fd9c90177a1a100717",
+      "meaning": "A new subscription is live: (chainId, origin emitter, topic0)."
+    },
+    {
+      "name": "Rebalanced(address,uint256,uint256)",
+      "contract": "Executor",
+      "chainId": 11155111,
+      "topic0": "0x3645b7cfbb41ac8e6dcc3c4877ede2c60b467a0374b7a7fc7563f0a09580999e",
+      "meaning": "Capital moved between pools: (sender, origin block, amount)."
+    },
+    {
+      "name": "MarginSwept(uint256)",
+      "contract": "Executor",
+      "chainId": 11155111,
+      "topic0": "0xb3597149a593cde2f9a30fe1c0e1e4e5bf68f2b7528af95d342becbc0ab7039b",
+      "meaning": "Margin above the tank target was swept into the fund."
+    },
+    {
+      "name": "VaultUnpaid(address)",
+      "contract": "Executor",
+      "chainId": 11155111,
+      "topic0": "0x65c2c54accac5e2609c6612bdb7697286507174b337fdd01c3799de282970943",
+      "meaning": "A serviced safe could not be billed (fee cap reached)."
+    },
+    {
+      "name": "FeeAccrued(uint256)",
+      "contract": "AssetVault",
+      "chainId": 11155111,
+      "topic0": "0xb42056c053e059683baf30e86a45ffb4bfb6763f140678f37f03d70b184d9375",
+      "meaning": "Service fee accrued on a safe (accounting debt, settled at cash events)."
+    },
+    {
+      "name": "FeesCollected(address,uint256)",
+      "contract": "AssetVault",
+      "chainId": 11155111,
+      "topic0": "0x9dc46f23cfb5ddcad0ae7ea2be38d47fec07bb9382ec7e564efc69e036dd66ce",
+      "meaning": "Accrued fees were settled and sent."
+    },
+    {
+      "name": "VaultDeposit(address,address,uint256,uint256)",
+      "contract": "AssetVault",
+      "chainId": 11155111,
+      "topic0": "0xc6aafc21f601c016a9b2eb0b269eb49d7f18fbd5725c47cbe344d659b282db1e",
+      "meaning": "A deposit into the safe: (sender, owner, assets, shares)."
+    },
+    {
+      "name": "VaultRedeem(address,address,address,uint256,uint256)",
+      "contract": "AssetVault",
+      "chainId": 11155111,
+      "topic0": "0xfaa50874857697b85b18a6a5d3c78bef6e9ce5295efd996d04ada5aff096af5b",
+      "meaning": "A redeem from the safe: (sender, receiver, owner, assets, shares)."
+    },
+    {
+      "name": "Deposited(address,uint256,uint256)",
+      "contract": "AssetVault",
+      "chainId": 11155111,
+      "topic0": "0x73a19dd210f1a7f902193214c0ee91dd35ee5b4d920cba8d519eca65a7b488ca",
+      "meaning": "Native cash into the system (part may go to the treasury)."
+    },
+    {
+      "name": "Withdrawn(address,uint256)",
+      "contract": "AssetVault",
+      "chainId": 11155111,
+      "topic0": "0x7084f5476618d8e60b11ef0d7d3f06914655adb8793e28ff7f018d4c76d505d5",
+      "meaning": "Cash out of the system: the owner exit that always works."
+    },
+    {
+      "name": "WatchdogAlert(uint256,uint256,bool)",
+      "contract": "Watchdog",
+      "chainId": 5318007,
+      "topic0": "0x503d44cb185eaa1e7a92318f5e5463b6c5b7cf6d7d336e64d5603d8dfba33150",
+      "meaning": "Patrol missed a pulse (or recovery detected)."
+    },
+    {
+      "name": "Revived(address,uint256,uint256)",
+      "contract": "ReliefFund",
+      "chainId": 5318007,
+      "topic0": "0x25253127184eb06d3a5ccf546175dbbda69566a030ac9f60ed5018411ed69f48",
+      "meaning": "SYSTEM debt was covered and delivery resumed: (target, debt, topUp)."
+    },
+    {
+      "name": "FuelOrdered(uint256,uint8)",
+      "contract": "FuelConverter",
+      "chainId": 5318007,
+      "topic0": "0x35270f7dee23a34e79ab65229f916124b837f481f1f271cbc2a5e06800de6477",
+      "meaning": "The auto-crane placed a fuel purchase order."
+    },
+    {
+      "name": "FuelBought(uint256,address)",
+      "contract": "FuelConverter",
+      "chainId": 5318007,
+      "topic0": "0x53a1b55d722533fbf12635119e63ac4462c3dab40f7971f9e1baaa07c19e50ef",
+      "meaning": "Fuel bought: ethSpent credited against the fund."
+    },
+    {
+      "name": "PurchasePulled(address,uint256)",
+      "contract": "GasVault",
+      "chainId": 11155111,
+      "topic0": "0x154579796f109b0295f005469ac360177276b7d4b0e47f993db48096fa79cf7b",
+      "meaning": "The buyer pulled purchase funds from the fund (bounded by earned)."
+    }
+  ],
+  "evidence": {
+    "note": "Full-cycle transaction hashes (origin event -> react -> callback) are added here at submission. Until then the live stand is monitored by the sensor; counters are readable on-chain (see events above)."
+  },
+  "links": {
+    "repo": "https://github.com/grottnnov/reactorvault",
+    "license": "MIT",
+    "quickstart": "README.md - Quickstart (an hour, testnet from zero)"
+  }
+}
