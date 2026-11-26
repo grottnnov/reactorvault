@@ -43,7 +43,7 @@ contract GuardVaultTest is Test {
         feed.setRound(int256(PRICE), block.timestamp);
 
         vm.prank(alice);
-        vault = new GuardVault(address(stock), address(usdg), address(feed), address(adapter), bob);
+        vault = new GuardVault(address(stock), address(usdg), address(feed), address(adapter), bob, address(0));
 
         stock.mint(alice, 1000e18);
         usdg.mint(alice, 100_000e6);

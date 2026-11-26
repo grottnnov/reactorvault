@@ -608,18 +608,8 @@ contract RulesEngine is AbstractReactive {
     function _onboardClient(LogRecord calldata log_) private {
         address vault = address(uint160(log_.topic2));
         address asset = address(uint160(log_.topic3));
-        (
-            address feed,
-            uint8 level,
-            uint256 entryRef,
-            uint64 warnBps,
-            uint64 midBps,
-            uint64 hardBps,
-            uint64 targetBps,
-            uint64 bandBps,
-            uint64 cooldown,
-            uint64 maxStaleSec
-        ) = abi.decode(log_.data, (address, uint8, uint256, uint64, uint64, uint64, uint64, uint64, uint64, uint64));
+        (address feed, uint8 level, uint256 entryRef, uint256 packedLadder, uint256 packedOps) =
+            abi.decode(log_.data, (address, uint8, uint256, uint256, uint256));
         level; // informational (the presets live in the factory); kept in
         // the event for the landing's causal feed
         GuardPolicy memory p;
@@ -629,13 +619,13 @@ contract RulesEngine is AbstractReactive {
         p.vault = vault;
         p.destChainId = log_.chainId;
         p.entryRef = entryRef;
-        p.warnBps = warnBps;
-        p.midBps = midBps;
-        p.hardBps = hardBps;
-        p.targetBps = targetBps;
-        p.bandBps = bandBps;
-        p.maxStaleSec = maxStaleSec;
-        p.cooldown = cooldown;
+        p.warnBps = uint64(packedLadder);
+        p.midBps = uint64(packedLadder >> 64);
+        p.hardBps = uint64(packedLadder >> 128);
+        p.targetBps = uint64(packedLadder >> 192);
+        p.bandBps = uint64(packedOps);
+        p.cooldown = uint64(packedOps >> 64);
+        p.maxStaleSec = uint64(packedOps >> 128);
         _armClient(p);
     }
 

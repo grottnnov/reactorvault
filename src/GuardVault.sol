@@ -87,14 +87,26 @@ contract GuardVault is IGuardVault {
         _;
     }
 
-    constructor(address asset_, address stable_, address feed_, address swapAdapter_, address executor_) {
+    /// @dev owner_ = address(0) keeps the direct-deploy semantics
+    ///      (owner = msg.sender); the FACTORY passes its client
+    ///      (D-2611-3: the vault belongs to the client, not the
+    ///      deploying factory). Custody assignment only — the money
+    ///      logic is untouched.
+    constructor(
+        address asset_,
+        address stable_,
+        address feed_,
+        address swapAdapter_,
+        address executor_,
+        address owner_
+    ) {
         if (
             asset_ == address(0) || stable_ == address(0) || feed_ == address(0) || swapAdapter_ == address(0)
                 || executor_ == address(0) || asset_ == stable_
         ) {
             revert ZeroAddress();
         }
-        owner = msg.sender;
+        owner = owner_ == address(0) ? msg.sender : owner_;
         executor = executor_;
         asset = asset_;
         stable = stable_;

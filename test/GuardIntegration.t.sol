@@ -61,7 +61,8 @@ contract GuardIntegrationTest is Test {
         vm.stopPrank();
 
         vm.prank(alice);
-        guardVault = new GuardVault(address(stock), address(usdg), feedAddr, address(adapter), address(executor));
+        guardVault =
+            new GuardVault(address(stock), address(usdg), feedAddr, address(adapter), address(executor), address(0));
 
         vm.startPrank(bob);
         executor.addGuardVault(address(stock), address(guardVault));
