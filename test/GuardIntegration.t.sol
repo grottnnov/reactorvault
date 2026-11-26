@@ -6,7 +6,7 @@ import {Executor, IExecutorVault} from "../src/Executor.sol";
 import {AssetVault} from "../src/AssetVault.sol";
 import {GasVault} from "../src/GasVault.sol";
 import {GuardVault} from "../src/GuardVault.sol";
-import {GuardMsg} from "../src/IGuardVault.sol";
+import {GuardItem} from "../src/IGuardVault.sol";
 import {MockERC20} from "./mocks/MockERC20.sol";
 import {MockFeed} from "./mocks/MockFeed.sol";
 import {MockSwapAdapter} from "./mocks/MockSwapAdapter.sol";
@@ -87,17 +87,11 @@ contract GuardIntegrationTest is Test {
     }
 
     function _guard(uint8 kind, uint256 param, uint256 param2, uint256 bound) internal {
-        GuardMsg memory m;
-        m.sender = rulesEngine;
-        m.feed = feedAddr;
-        m.asset = address(stock);
-        m.kind = kind;
-        m.param = param;
-        m.param2 = param2;
-        m.bound = bound;
-        m.originBlockNumber = 77;
+        GuardItem[] memory items = new GuardItem[](1);
+        items[0] = GuardItem({vault: address(guardVault), kind: kind, param: param, param2: param2, bound: bound});
         vm.prank(proxy);
-        executor.guardAction(m);
+        // the wire is flat: sender first (the network substitution slot)
+        executor.guardAction(rulesEngine, feedAddr, address(stock), 77, items);
     }
 
     function testTrim_FullMoneyPath() public {

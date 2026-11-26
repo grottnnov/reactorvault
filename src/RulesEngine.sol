@@ -3,7 +3,7 @@ pragma solidity ^0.8.29;
 
 import {AbstractReactive} from "reactive-lib-omni/base/AbstractReactive.sol";
 import {ISystemContract} from "reactive-lib-omni/interfaces/ISystemContract.sol";
-import {GuardMsg} from "./IGuardVault.sol";
+import {GuardItem} from "./IGuardVault.sol";
 
 /// @title RulesEngine — the brain (ADR-v2 + ADR-EXPANSION)
 /// @notice Product logic ONLY: "if X → ACT" rules, callbacks into the
@@ -69,14 +69,31 @@ contract RulesEngine is AbstractReactive {
     mapping(bytes32 => bool) public processed;
 
     // ------------------------------------------------------------------
-    // Guard vertical (ADR-GUARD-RULES, 25.11): the brain keeps the
-    // price HISTORY (anchor = max(entry, high-water mark)) and fires
-    // typed guardAction callbacks; the executor re-verifies NOW.
+    // Guard vertical (ADR-GUARD-RULES, 25.11; multi-client D-2611-3):
+    // the brain keeps the price HISTORY per client (anchor = max(entry,
+    // high-water mark SINCE ARMING) and fires ONE batched guardAction
+    // callback per event; the executor re-verifies NOW. Freshness and
+    // pause are FEED-level (properties of the feed, not the client);
+    // the anchor, rung and cooldown are CLIENT-level (each client
+    // entered at its own price and time).
     // ------------------------------------------------------------------
 
     /// @dev 3-arg AnswerUpdated topic0 (canon: subscribe to the
     ///      emitter aggregator, never the proxy).
     uint256 public constant ANSWER_UPDATED_TOPIC = 0x0559884fd3a460db3073b7fc96cc77986f16e378210ded43186175bf646fc5f;
+
+    /// @dev GuardSafeCreated(client indexed, vault indexed, asset
+    ///      indexed, feed, level, entryRef, warnBps, midBps, hardBps,
+    ///      targetBps, bandBps, cooldown, maxStaleSec) — the factory's
+    ///      onboarding event on the destination chain. The brain reacts
+    ///      to it and arms the client rule by itself: a client (human
+    ///      or agent) creates a safe on-chain and the guard turns on —
+    ///      no operator in the loop.
+    uint256 public constant GUARD_SAFE_CREATED_TOPIC = uint256(
+        keccak256(
+            "GuardSafeCreated(address,address,address,address,uint8,uint256,uint64,uint64,uint64,uint64,uint64,uint64,uint64)"
+        )
+    );
 
     uint8 public constant GUARD_TRIM = 1;
     uint8 public constant GUARD_EXIT = 2;
@@ -84,18 +101,24 @@ contract RulesEngine is AbstractReactive {
     uint8 public constant GUARD_PAUSE = 4;
     uint8 public constant GUARD_RESUME = 5;
 
-    /// @notice One guard rule per feed. The anchor (max(entryRef, hwm))
-    ///         gives BOTH capital protection (hwm ≈ entry early) and
-    ///         the trailing floor (the anchor follows the high). The
-    ///         ladder: warn → trim to target share; mid → exit half;
-    ///         hard → exit all. Deepening bypasses the cooldown; the
-    ///         cooldown guards the rebuy flap; the vault band no-ops
-    ///         bound the trim-rebuy cycle.
-    struct GuardRule {
-        bool active;
+    /// @notice FEED-level record: liveness, pause, routing, clients.
+    struct GuardFeed {
+        bool active; // at least one armed client
         address feed; // the Chainlink emitter on the origin chain
-        address asset; // the stock token inside the guard safe
+        address asset; // the stock token (one feed = one asset)
         uint256 destChainId;
+        uint256 lastUpdateTs; // freshness patrol input
+        bool paused;
+        bytes32[] clients; // armed client keys
+    }
+
+    /// @notice CLIENT-level rule: policy + own price history.
+    struct GuardClient {
+        bool active;
+        address vault; // the client's guard safe on the destination chain
+        address asset;
+        uint256 destChainId;
+        uint256 entryRef; // the client's entry price (feed decimals)
         uint64 warnBps; // rung 1: trim
         uint64 midBps; // rung 2: exit 50%
         uint64 hardBps; // rung 3: exit 100%
@@ -104,23 +127,28 @@ contract RulesEngine is AbstractReactive {
         uint64 maxStaleSec;
         uint64 cooldown;
         uint64 lastFiredAt;
-        uint256 entryRef;
-        uint256 hwm;
-        uint256 lastUpdateTs;
+        uint256 hwm; // high-water mark SINCE ARMING (per client)
         uint8 rung;
-        bool paused;
     }
 
-    /// @dev Guard key = keccak256(origin chainId ‖ feed emitter).
-    ///      INTERNAL on purpose: the auto-generated getter of a
-    ///      17-field struct hits the stack limit — the narrow views
-    ///      below are the public surface (tests, sensor, landing).
-    mapping(bytes32 => GuardRule) internal guardRules;
+    /// @dev Feed key = keccak256(origin chainId ‖ feed emitter); client
+    ///      key = keccak256(feed key ‖ vault). INTERNAL on purpose: the
+    ///      auto-generated getters of wide structs hit the stack limit —
+    ///      the narrow views below are the public surface.
+    mapping(bytes32 => GuardFeed) internal guardFeeds;
     bytes32[] public guardFeedList;
+    mapping(bytes32 => GuardClient) internal guardClients;
 
-    /// @dev The full policy is readable via guardRules(key) + the
-    ///      narrow views; the event carries the identity only.
-    event GuardRuleSet(bytes32 indexed key, uint256 chainId, address feed, address asset, uint256 entryRef);
+    /// @dev Origin chain → the guard safe factory whose onboarding
+    ///      events arm client rules (reactive self-service).
+    mapping(uint256 => address) public guardFactories;
+
+    /// @dev The full policy is readable via the narrow views; the
+    ///      event carries the identity only.
+    event GuardClientSet(
+        bytes32 indexed key, uint256 chainId, address feed, address vault, address asset, uint256 entryRef
+    );
+    event GuardFactorySet(uint256 indexed chainId, address factory);
     event GuardFired(uint8 kind, address indexed feed, uint256 chainId, uint256 price, uint256 anchor, uint8 rung);
     event GuardStale(address indexed feed, uint256 lastUpdateTs, uint256 age);
 
@@ -164,12 +192,13 @@ contract RulesEngine is AbstractReactive {
         return keccak256(abi.encodePacked(chainId_, feed_));
     }
 
-    /// @notice Owner-facing policy of one guard rule (calldata struct:
-    ///         one argument instead of twelve — stack and readability).
+    /// @notice Owner-facing policy of one client rule (calldata struct:
+    ///         one argument instead of thirteen — stack and readability).
     struct GuardPolicy {
         uint256 chainId; // origin (the feed's chain)
         address feed; // the Chainlink emitter
         address asset; // the stock token inside the guard safe
+        address vault; // the client's guard safe on the destination chain
         uint256 destChainId; // the executor's chain
         uint256 entryRef; // feed-decimals reference at setup
         uint64 warnBps; // rung 1: trim to target share
@@ -181,72 +210,125 @@ contract RulesEngine is AbstractReactive {
         uint64 cooldown; // rebuy flap guard
     }
 
-    /// @notice Configure + subscribe a guard rule. Requires a wired
-    ///         executor on the destination chain (a subscription
+    /// @notice Operator path: arm (or re-set) one client rule. Requires
+    ///         a wired executor on the destination chain (a subscription
     ///         without a callback destination would waste paid
-    ///         deliveries). Re-setting resets the price state.
+    ///         deliveries). Re-setting resets the client's price state
+    ///         and never duplicates the client list. The self-service
+    ///         twin is the factory's GuardSafeCreated event.
     function setGuardRule(GuardPolicy calldata p_) external onlyOwner noDelegateCall {
         if (!initialized) revert NotInitialized();
+        _armClient(p_);
+    }
+
+    /// @notice Wire the guard safe factory: its GuardSafeCreated events
+    ///         on that chain arm client rules by themselves. One static
+    ///         subscription, whatever the client flow.
+    function setGuardFactory(uint256 chainId_, address factory_) external onlyOwner noDelegateCall {
+        if (!initialized) revert NotInitialized();
+        if (factory_ == address(0)) revert ZeroAddress();
+        if (executors[chainId_] == address(0)) revert ZeroAddress();
+        guardFactories[chainId_] = factory_;
+        SYSTEM.subscribe(
+            chainId_, factory_, GUARD_SAFE_CREATED_TOPIC, REACTIVE_IGNORE, REACTIVE_IGNORE, REACTIVE_IGNORE
+        );
+        emit GuardFactorySet(chainId_, factory_);
+    }
+
+    /// @dev The shared arming path (operator and reactive onboarding).
+    ///      Feed record + one-time subscription; client record keyed by
+    ///      (feed, vault); the client list grows on NEW vaults only.
+    function _armClient(GuardPolicy memory p_) private {
         if (executors[p_.destChainId] == address(0)) revert ZeroAddress();
-        if (p_.entryRef == 0) revert BadGuardParams();
+        if (p_.entryRef == 0 || p_.vault == address(0) || p_.feed == address(0) || p_.asset == address(0)) {
+            revert BadGuardParams();
+        }
         if (!(p_.warnBps > 0 && p_.warnBps < p_.midBps && p_.midBps < p_.hardBps && p_.hardBps <= 10_000)) {
             revert BadGuardParams();
         }
         if (p_.targetBps > 10_000 || p_.bandBps >= p_.targetBps) revert BadGuardParams();
 
-        bytes32 key = guardKey(p_.chainId, p_.feed);
-        GuardRule storage g = guardRules[key];
-        if (!g.active) {
-            guardFeedList.push(key);
+        bytes32 fkey = guardKey(p_.chainId, p_.feed);
+        GuardFeed storage f = guardFeeds[fkey];
+        if (!f.active) {
+            f.active = true;
+            f.feed = p_.feed;
+            f.asset = p_.asset;
+            f.destChainId = p_.destChainId;
+            guardFeedList.push(fkey);
+            SYSTEM.subscribe(
+                p_.chainId, p_.feed, ANSWER_UPDATED_TOPIC, REACTIVE_IGNORE, REACTIVE_IGNORE, REACTIVE_IGNORE
+            );
         }
-        g.active = true;
-        g.feed = p_.feed;
-        g.asset = p_.asset;
-        g.destChainId = p_.destChainId;
-        g.warnBps = p_.warnBps;
-        g.midBps = p_.midBps;
-        g.hardBps = p_.hardBps;
-        g.targetBps = p_.targetBps;
-        g.bandBps = p_.bandBps;
-        g.maxStaleSec = p_.maxStaleSec;
-        g.cooldown = p_.cooldown;
-        g.lastFiredAt = 0;
-        g.entryRef = p_.entryRef;
-        g.hwm = p_.entryRef; // the anchor starts at entry
-        g.lastUpdateTs = 0;
-        g.rung = 0;
-        g.paused = false;
 
-        SYSTEM.subscribe(p_.chainId, p_.feed, ANSWER_UPDATED_TOPIC, REACTIVE_IGNORE, REACTIVE_IGNORE, REACTIVE_IGNORE);
-        emit GuardRuleSet(key, p_.chainId, p_.feed, p_.asset, p_.entryRef);
+        bytes32 ckey = clientKey(fkey, p_.vault);
+        GuardClient storage c = guardClients[ckey];
+        if (!c.active) {
+            f.clients.push(ckey);
+        }
+        c.active = true;
+        c.vault = p_.vault;
+        c.asset = p_.asset;
+        c.destChainId = p_.destChainId;
+        c.warnBps = p_.warnBps;
+        c.midBps = p_.midBps;
+        c.hardBps = p_.hardBps;
+        c.targetBps = p_.targetBps;
+        c.bandBps = p_.bandBps;
+        c.maxStaleSec = p_.maxStaleSec;
+        c.cooldown = p_.cooldown;
+        c.lastFiredAt = 0;
+        c.entryRef = p_.entryRef;
+        c.hwm = p_.entryRef; // the anchor starts at entry
+        c.rung = 0;
+        emit GuardClientSet(ckey, p_.chainId, p_.feed, p_.vault, p_.asset, p_.entryRef);
+    }
+
+    /// @dev Client key: (feed key, vault). A client re-creating their
+    ///      safe gets a NEW vault address = a new rule; a re-broadcast
+    ///      onboarding for the SAME vault re-sets it (idempotent).
+    function clientKey(bytes32 feedKey_, address vault_) public pure returns (bytes32) {
+        return keccak256(abi.encodePacked(feedKey_, vault_));
     }
 
     // Narrow views (the sensor and the landing feed read these; tests
-    // avoid the 17-field tuple destructure).
-    function guardHwmOf(uint256 chainId_, address feed_) external view returns (uint256) {
-        return guardRules[guardKey(chainId_, feed_)].hwm;
+    // avoid wide tuple destructures).
+    function guardHwmOf(uint256 chainId_, address feed_, address vault_) external view returns (uint256) {
+        bytes32 ckey = clientKey(guardKey(chainId_, feed_), vault_);
+        return guardClients[ckey].hwm;
     }
 
-    function guardRungOf(uint256 chainId_, address feed_) external view returns (uint8) {
-        return guardRules[guardKey(chainId_, feed_)].rung;
+    function guardRungOf(uint256 chainId_, address feed_, address vault_) external view returns (uint8) {
+        bytes32 ckey = clientKey(guardKey(chainId_, feed_), vault_);
+        return guardClients[ckey].rung;
+    }
+
+    function guardClientActiveOf(uint256 chainId_, address feed_, address vault_) external view returns (bool) {
+        bytes32 ckey = clientKey(guardKey(chainId_, feed_), vault_);
+        return guardClients[ckey].active;
+    }
+
+    function guardClientCountOf(uint256 chainId_, address feed_) external view returns (uint256) {
+        return guardFeeds[guardKey(chainId_, feed_)].clients.length;
     }
 
     function guardPausedOf(uint256 chainId_, address feed_) external view returns (bool) {
-        return guardRules[guardKey(chainId_, feed_)].paused;
+        return guardFeeds[guardKey(chainId_, feed_)].paused;
     }
 
     function guardLastUpdateOf(uint256 chainId_, address feed_) external view returns (uint256) {
-        return guardRules[guardKey(chainId_, feed_)].lastUpdateTs;
+        return guardFeeds[guardKey(chainId_, feed_)].lastUpdateTs;
     }
 
     function guardActiveOf(uint256 chainId_, address feed_) external view returns (bool) {
-        return guardRules[guardKey(chainId_, feed_)].active;
+        return guardFeeds[guardKey(chainId_, feed_)].active;
     }
 
-    function guardConfigOf(uint256 chainId_, address feed_)
+    function guardClientConfigOf(uint256 chainId_, address feed_, address vault_)
         external
         view
         returns (
+            address vault,
             address asset,
             uint256 destChainId,
             uint64 warnBps,
@@ -258,9 +340,20 @@ contract RulesEngine is AbstractReactive {
             uint64 cooldown
         )
     {
-        GuardRule storage g = guardRules[guardKey(chainId_, feed_)];
-        return
-            (g.asset, g.destChainId, g.warnBps, g.midBps, g.hardBps, g.targetBps, g.bandBps, g.maxStaleSec, g.cooldown);
+        bytes32 ckey = clientKey(guardKey(chainId_, feed_), vault_);
+        GuardClient storage c = guardClients[ckey];
+        return (
+            c.vault,
+            c.asset,
+            c.destChainId,
+            c.warnBps,
+            c.midBps,
+            c.hardBps,
+            c.targetBps,
+            c.bandBps,
+            c.maxStaleSec,
+            c.cooldown
+        );
     }
 
     function initialize(
@@ -351,9 +444,10 @@ contract RulesEngine is AbstractReactive {
     ///      loss; one-shot rules would need a queue and are out of MVP
     ///      scope. The cooldown, however, only starts counting on a REAL
     ///      fire: an unwired destination chain never burns it.
-    ///      Guard vertical: a feed event is consumed by the guard path
-    ///      (answer sanity → history → rungs); every other event runs
-    ///      the staleness patrol first, then the generic path.
+    ///      Guard vertical: a feed event runs the per-client ladder (one
+    ///      batched callback per event, whatever the client count); a
+    ///      factory event arms a client (reactive onboarding); every
+    ///      other event runs the staleness patrol, then the generic path.
     function react(LogRecord calldata log_) external override onlySystem {
         _checkGasEdge();
         bytes32 key = keccak256(abi.encodePacked(log_.chainId, log_.contractAddress, log_.blockNumber, log_.topic0));
@@ -363,9 +457,15 @@ contract RulesEngine is AbstractReactive {
         processed[key] = true;
 
         if (log_.topic0 == ANSWER_UPDATED_TOPIC) {
-            GuardRule storage g = guardRules[guardKey(log_.chainId, log_.contractAddress)];
-            if (g.active) {
-                _guardEvaluate(g, log_);
+            GuardFeed storage f = guardFeeds[guardKey(log_.chainId, log_.contractAddress)];
+            if (f.active) {
+                _feedEvaluate(f, log_);
+                return;
+            }
+        }
+        if (log_.topic0 == GUARD_SAFE_CREATED_TOPIC) {
+            if (guardFactories[log_.chainId] == log_.contractAddress) {
+                _onboardClient(log_);
                 return;
             }
         }
@@ -394,87 +494,193 @@ contract RulesEngine is AbstractReactive {
     }
 
     // ------------------------------------------------------------------
-    // Guard internals (ADR-GUARD-RULES)
+    // Guard internals (ADR-GUARD-RULES + multi-client D-2611-3)
     // ------------------------------------------------------------------
 
     /// @dev AnswerUpdated(int256 current, uint256 roundId, uint256
     ///      updatedAt) — the 3-arg canon. Sanity first (answer > 0),
-    ///      then history (hwm, lastUpdate), then the ladder.
-    function _guardEvaluate(GuardRule storage g, LogRecord calldata log_) private {
+    ///      then the FEED bookkeeping (freshness, resume), then every
+    ///      client's OWN ladder — all fired clients ride ONE batched
+    ///      callback (burn independent of the client count).
+    function _feedEvaluate(GuardFeed storage f, LogRecord calldata log_) private {
         (int256 current,, uint256 updatedAt) = abi.decode(log_.data, (int256, uint256, uint256));
         if (current <= 0) {
             return; // sanity canon: a bad answer never touches the state
         }
         uint256 price = uint256(current);
-        if (price > g.hwm) {
-            g.hwm = price;
-        }
-        g.lastUpdateTs = updatedAt;
+        f.lastUpdateTs = updatedAt;
 
-        if (g.paused) {
-            g.paused = false;
-            _fireGuard(g, GUARD_RESUME, 0, 0, 0, log_.blockNumber);
+        bool resume = f.paused;
+        if (resume) {
+            f.paused = false;
         }
 
-        uint256 anchor = g.hwm > g.entryRef ? g.hwm : g.entryRef;
-        uint8 rung = _rungOf(g, anchor, price);
+        uint256 n = f.clients.length;
+        GuardItem[] memory fired = new GuardItem[](n + 1); // + the resume slot
+        uint256 k = 0;
+        if (resume) {
+            fired[k] = GuardItem({vault: address(0), kind: GUARD_RESUME, param: 0, param2: 0, bound: 0});
+            k += 1;
+        }
 
-        if (rung > g.rung) {
-            // Deepening (or first crossing): fires regardless of the
-            // cooldown — worse news does not wait (ADR-GUARD-RULES §4).
-            if (rung == 1) {
-                emit GuardFired(GUARD_TRIM, g.feed, log_.chainId, price, anchor, rung);
-                _fireGuard(g, GUARD_TRIM, g.targetBps, g.bandBps, _pct(anchor, 10_000 - g.warnBps), log_.blockNumber);
-            } else if (rung == 2) {
-                emit GuardFired(GUARD_EXIT, g.feed, log_.chainId, price, anchor, rung);
-                _fireGuard(g, GUARD_EXIT, 5_000, 0, _pct(anchor, 10_000 - g.midBps), log_.blockNumber);
-            } else {
-                emit GuardFired(GUARD_EXIT, g.feed, log_.chainId, price, anchor, rung);
-                _fireGuard(g, GUARD_EXIT, 10_000, 0, _pct(anchor, 10_000 - g.hardBps), log_.blockNumber);
+        for (uint256 i = 0; i < n; i++) {
+            GuardClient storage c = guardClients[f.clients[i]];
+            if (!c.active) {
+                continue;
             }
-            g.rung = rung;
-            g.lastFiredAt = uint64(block.timestamp);
-        } else if (rung == 0 && g.rung > 0) {
-            // Full recovery above warn: the rebuy gate, cooldown-gated
-            // (flap guard). The vault no-ops inside the band, so the
-            // trim-rebuy cycle is bounded by the band, not the price.
-            if (uint64(block.timestamp) >= g.lastFiredAt + g.cooldown) {
-                emit GuardFired(GUARD_REBUY, g.feed, log_.chainId, price, anchor, 0);
-                _fireGuard(g, GUARD_REBUY, g.targetBps, g.bandBps, 0, log_.blockNumber);
-                g.rung = 0;
-                g.lastFiredAt = uint64(block.timestamp);
+            if (price > c.hwm) {
+                c.hwm = price; // the client's OWN high since arming
+            }
+            uint256 anchor = c.hwm > c.entryRef ? c.hwm : c.entryRef;
+            uint8 rung = _rungOf(c, anchor, price);
+
+            if (rung > c.rung) {
+                fired[k] = _fireDeepening(c, f.feed, log_.chainId, price, anchor, rung);
+                k += 1;
+            } else if (rung == 0 && c.rung > 0) {
+                if (uint64(block.timestamp) >= c.lastFiredAt + c.cooldown) {
+                    fired[k] = _fireRebuy(c, f.feed, log_.chainId, price, anchor);
+                    k += 1;
+                }
             }
         }
+
+        if (k == 0) {
+            return;
+        }
+        GuardItem[] memory items = new GuardItem[](k);
+        for (uint256 i = 0; i < k; i++) {
+            items[i] = fired[i];
+        }
+        _fireBatch(f.feed, f.asset, f.destChainId, log_.blockNumber, items);
+    }
+
+    /// @dev Deepening (or first crossing): fires regardless of the
+    ///      cooldown — worse news does not wait (ADR-GUARD-RULES §4).
+    ///      Own frame: keeps the evaluate loop thin.
+    function _fireDeepening(
+        GuardClient storage c,
+        address feed_,
+        uint256 chainId_,
+        uint256 price,
+        uint256 anchor,
+        uint8 rung
+    ) private returns (GuardItem memory item) {
+        uint8 kind = GUARD_EXIT;
+        uint256 param = 10_000;
+        uint256 param2 = 0;
+        uint256 bound;
+        if (rung == 1) {
+            kind = GUARD_TRIM;
+            param = c.targetBps;
+            param2 = c.bandBps;
+            bound = _pct(anchor, 10_000 - c.warnBps);
+        } else if (rung == 2) {
+            param = 5_000;
+            bound = _pct(anchor, 10_000 - c.midBps);
+        } else {
+            bound = _pct(anchor, 10_000 - c.hardBps);
+        }
+        emit GuardFired(kind, feed_, chainId_, price, anchor, rung);
+        c.rung = rung;
+        c.lastFiredAt = uint64(block.timestamp);
+        return GuardItem({vault: c.vault, kind: kind, param: param, param2: param2, bound: bound});
+    }
+
+    /// @dev Full recovery above warn: the rebuy gate (per-client
+    ///      cooldown-gated flap guard). The vault no-ops inside the
+    ///      band, so the trim-rebuy cycle is bounded by the band.
+    function _fireRebuy(GuardClient storage c, address feed_, uint256 chainId_, uint256 price, uint256 anchor)
+        private
+        returns (GuardItem memory item)
+    {
+        emit GuardFired(GUARD_REBUY, feed_, chainId_, price, anchor, 0);
+        c.rung = 0;
+        c.lastFiredAt = uint64(block.timestamp);
+        return GuardItem({vault: c.vault, kind: GUARD_REBUY, param: c.targetBps, param2: c.bandBps, bound: 0});
+    }
+
+    /// @dev Reactive onboarding: the factory's GuardSafeCreated event,
+    ///      decoded and armed. The destination chain IS the factory's
+    ///      chain (the vault lives there). A malformed event dies
+    ///      loudly (BadGuardParams) — the processed mark is already
+    ///      written, so a retry needs the next event.
+    function _onboardClient(LogRecord calldata log_) private {
+        address vault = address(uint160(log_.topic2));
+        address asset = address(uint160(log_.topic3));
+        (
+            address feed,
+            uint8 level,
+            uint256 entryRef,
+            uint64 warnBps,
+            uint64 midBps,
+            uint64 hardBps,
+            uint64 targetBps,
+            uint64 bandBps,
+            uint64 cooldown,
+            uint64 maxStaleSec
+        ) = abi.decode(log_.data, (address, uint8, uint256, uint64, uint64, uint64, uint64, uint64, uint64, uint64));
+        level; // informational (the presets live in the factory); kept in
+        // the event for the landing's causal feed
+        GuardPolicy memory p;
+        p.chainId = log_.chainId;
+        p.feed = feed;
+        p.asset = asset;
+        p.vault = vault;
+        p.destChainId = log_.chainId;
+        p.entryRef = entryRef;
+        p.warnBps = warnBps;
+        p.midBps = midBps;
+        p.hardBps = hardBps;
+        p.targetBps = targetBps;
+        p.bandBps = bandBps;
+        p.maxStaleSec = maxStaleSec;
+        p.cooldown = cooldown;
+        _armClient(p);
     }
 
     /// @dev Staleness patrol: runs on any non-feed event (the cron
     ///      ladder of the destination networks). One PAUSE per stale
-    ///      episode; the fresh AnswerUpdated resumes.
+    ///      episode, feed-level; the threshold is the STRICTEST of the
+    ///      armed clients' maxStaleSec (any client demanding freshness
+    ///      pauses the feed). The fresh AnswerUpdated resumes.
     function _checkGuardStaleness() private {
         uint256 n = guardFeedList.length;
         if (n == 0) {
             return;
         }
         for (uint256 i = 0; i < n; i++) {
-            GuardRule storage g = guardRules[guardFeedList[i]];
-            if (!g.active || g.paused || g.lastUpdateTs == 0) {
+            GuardFeed storage f = guardFeeds[guardFeedList[i]];
+            if (!f.active || f.paused || f.lastUpdateTs == 0) {
                 continue;
             }
-            uint256 age = block.timestamp - g.lastUpdateTs;
-            if (age > g.maxStaleSec) {
-                g.paused = true;
-                emit GuardStale(g.feed, g.lastUpdateTs, age);
-                _fireGuard(g, GUARD_PAUSE, 0, 0, 0, block.number);
+            uint256 maxStale = type(uint64).max;
+            for (uint256 j = 0; j < f.clients.length; j++) {
+                GuardClient storage c = guardClients[f.clients[j]];
+                if (c.active && c.maxStaleSec < maxStale) {
+                    maxStale = c.maxStaleSec;
+                }
+            }
+            if (maxStale == type(uint64).max) {
+                continue; // no armed clients
+            }
+            uint256 age = block.timestamp - f.lastUpdateTs;
+            if (age > maxStale) {
+                f.paused = true;
+                emit GuardStale(f.feed, f.lastUpdateTs, age);
+                GuardItem[] memory items = new GuardItem[](1);
+                items[0] = GuardItem({vault: address(0), kind: GUARD_PAUSE, param: 0, param2: 0, bound: 0});
+                _fireBatch(f.feed, f.asset, f.destChainId, block.number, items);
             }
         }
     }
 
-    function _rungOf(GuardRule storage g, uint256 anchor, uint256 price) private view returns (uint8) {
+    function _rungOf(GuardClient storage c, uint256 anchor, uint256 price) private view returns (uint8) {
         // anchor ≥ price always (hwm was just updated), so no underflow
         uint256 dd = (anchor - price) * 10_000 / anchor;
-        if (dd >= g.hardBps) return 3;
-        if (dd >= g.midBps) return 2;
-        if (dd >= g.warnBps) return 1;
+        if (dd >= c.hardBps) return 3;
+        if (dd >= c.midBps) return 2;
+        if (dd >= c.warnBps) return 1;
         return 0;
     }
 
@@ -482,35 +688,34 @@ contract RulesEngine is AbstractReactive {
         return value * bps / 10_000;
     }
 
-    function _fireGuard(
-        GuardRule storage g,
-        uint8 kind,
-        uint256 param,
-        uint256 param2,
-        uint256 bound,
-        uint256 originBlockNumber
+    /// @dev One batched callback per event. The wire format is FLAT:
+    ///      the sender placeholder is the FIRST 32-byte slot of the
+    ///      encoded args — exactly where the network's first-payload-
+    ///      slot substitution writes the callback sender (W2.2 canon;
+    ///      a wrapper tuple would prepend an offset word and corrupt
+    ///      the substitution — caught by the red first-slot test).
+    function _fireBatch(
+        address feed_,
+        address asset_,
+        uint256 destChainId_,
+        uint256 originBlockNumber_,
+        GuardItem[] memory items_
     ) private {
-        address executor = executors[g.destChainId];
+        address executor = executors[destChainId_];
         if (executor == address(0)) {
             return; // not wired — silent (the state machine already advanced)
         }
-        // One stack slot instead of eight arguments (GuardMsg):
-        // the byte layout equals the flat encoding, so the network's
-        // first-payload-slot substitution (the sender) is untouched.
-        GuardMsg memory m;
-        m.sender = address(0); // replaced by the delivery network
-        m.feed = g.feed;
-        m.asset = g.asset;
-        m.kind = kind;
-        m.param = param;
-        m.param2 = param2;
-        m.bound = bound;
-        m.originBlockNumber = originBlockNumber;
-        bytes memory payload =
-            abi.encodeWithSignature("guardAction((address,address,address,uint8,uint256,uint256,uint256,uint256))", m);
+        bytes memory payload = abi.encodeWithSignature(
+            "guardAction(address,address,address,uint256,(address,uint8,uint256,uint256,uint256)[])",
+            address(0), // the sender placeholder, substituted at delivery
+            feed_,
+            asset_,
+            originBlockNumber_,
+            items_
+        );
         SYSTEM.requestCallbackV_1_0(
             ISystemContract.CallbackConfiguration_V_1_0({
-                chainId: g.destChainId, recipient: executor, gasLimit: CALLBACK_GAS_LIMIT, payload: payload
+                chainId: destChainId_, recipient: executor, gasLimit: CALLBACK_GAS_LIMIT, payload: payload
             })
         );
     }

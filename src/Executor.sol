@@ -4,7 +4,7 @@ pragma solidity ^0.8.29;
 import {IAssetVault} from "./AssetVault.sol";
 import {IGasVault} from "./GasVault.sol";
 import {IPoolAdapter} from "./IPoolAdapter.sol";
-import {IGuardVault, GuardMsg} from "./IGuardVault.sol";
+import {IGuardVault, GuardItem} from "./IGuardVault.sol";
 import {IAggregatorV3} from "./IAggregatorV3.sol";
 import {AbstractCallback} from "reactive-lib-omni/base/AbstractCallback.sol";
 import {IPayable} from "reactive-lib-omni/interfaces/IPayable.sol";
@@ -73,16 +73,24 @@ contract Executor is AbstractCallback {
     uint8 public constant GUARD_PAUSE = 4;
     uint8 public constant GUARD_RESUME = 5;
 
-    /// @dev Skip reasons: 1 stale/sane answer, 2 paused, 3 recovered.
+    /// @dev Skip reasons: 1 stale/sane answer, 2 paused, 3 recovered,
+    ///      4 unknown vault, 5 the vault call failed (isolated: one
+    ///      failing client never blocks the rest of the batch).
     uint8 public constant GUARD_SKIP_STALE = 1;
     uint8 public constant GUARD_SKIP_PAUSED = 2;
     uint8 public constant GUARD_SKIP_RECOVERED = 3;
+    uint8 public constant GUARD_SKIP_VAULT = 4;
+    uint8 public constant GUARD_SKIP_VAULT_FAILED = 5;
 
     /// @notice Feed freshness bound at execution time (the brain has
     ///         its own per-rule bound; this is the second echelon).
     uint64 public guardMaxStalenessSec = 900;
 
-    mapping(address => address) public guardVaultOf; // asset → guard safe
+    /// @dev Multi-client (D-2611-3): the batch carries the vaults; this
+    ///      set is the executor-side admission (the factory registers
+    ///      every created safe) — defense in depth on top of the brain's
+    ///      own client list.
+    mapping(address => bool) public guardVaultKnown; // vault → admitted
     mapping(address => bool) public guardPaused; // asset → pause flag
 
     event GuardVaultAdded(address indexed asset, address indexed vault);
@@ -92,7 +100,6 @@ contract Executor is AbstractCallback {
     event GuardPaused(address indexed asset, address indexed feed);
     event GuardResumed(address indexed asset, address indexed feed);
 
-    error GuardNotConfigured();
     error BadGuardKind();
 
     event Rebalanced(address indexed sender, uint256 originBlockNumber, uint256 amount);
@@ -197,7 +204,7 @@ contract Executor is AbstractCallback {
     ///         is a separate family member list.
     function addGuardVault(address asset_, address vault_) external onlyOwner noDelegateCall {
         if (asset_ == address(0) || vault_ == address(0)) revert ZeroAddress();
-        guardVaultOf[asset_] = vault_;
+        guardVaultKnown[vault_] = true;
         emit GuardVaultAdded(asset_, vault_);
     }
 
@@ -206,68 +213,92 @@ contract Executor is AbstractCallback {
         emit GuardPolicySet(maxStalenessSec_);
     }
 
-    /// @notice The guard entry point. The brain computed WHEN from
-    ///         price history; THIS re-verifies NOW: the feed answer is
-    ///         positive and fresh (staleness), the pause flag is down,
-    ///         and for EXIT the live price is still at/below the
-    ///         trigger bound (between the reaction and the delivery
-    ///         the price may have recovered — then a quiet skip, the
-    ///         "rates re-checked locally" canon). PAUSE/RESUME are
-    ///         about the feed itself: no freshness check, no bill.
-    function guardAction(GuardMsg calldata m_)
-        external
-        noDelegateCall
-        onlyServiceProvider
-        onlyCallbackSender(m_.sender)
-    {
-        if (m_.kind == GUARD_PAUSE) {
-            guardPaused[m_.asset] = true;
-            emit GuardPaused(m_.asset, m_.feed);
-            return;
-        }
-        if (m_.kind == GUARD_RESUME) {
-            guardPaused[m_.asset] = false;
-            emit GuardResumed(m_.asset, m_.feed);
-            return;
-        }
-        if (m_.kind != GUARD_TRIM && m_.kind != GUARD_EXIT && m_.kind != GUARD_REBUY) revert BadGuardKind();
-        if (guardPaused[m_.asset]) {
-            emit GuardSkipped(m_.kind, m_.feed, m_.asset, GUARD_SKIP_PAUSED);
-            return;
-        }
+    /// @notice The guard entry point (multi-client, D-2611-3): ONE
+    ///         batched callback per price event, one item per client
+    ///         whose ladder fired. The brain computed WHEN from each
+    ///         client's own history; THIS re-verifies NOW: the feed
+    ///         answer is positive and fresh (staleness), the pause
+    ///         flag is down, and for EXIT the live price is still
+    ///         at/below the trigger bound (between the reaction and
+    ///         the delivery the price may have recovered — then a
+    ///         quiet skip, the "rates re-checked locally" canon).
+    ///         PAUSE/RESUME are about the feed itself: no freshness
+    ///         check, no bill.
+    /// @dev Item isolation: a failing or unknown vault is SKIPPED with
+    ///      an event — one client's bad day never blocks the rest of
+    ///      the batch (a revert here would block EVERYONE).
+    /// @dev The wire format is FLAT: sender FIRST (the network's
+    ///      first-payload-slot substitution), then the shared event
+    ///      context, then the items.
+    function guardAction(
+        address sender_,
+        address feed_,
+        address asset_,
+        uint256 originBlockNumber_,
+        GuardItem[] calldata items_
+    ) external noDelegateCall onlyServiceProvider onlyCallbackSender(sender_) {
+        originBlockNumber_; // causal-feed bookkeeping: the events carry it
+        (, int256 answer,, uint256 updatedAt,) = IAggregatorV3(feed_).latestRoundData();
+        bool sane = answer > 0;
+        bool fresh = sane && block.timestamp <= updatedAt + guardMaxStalenessSec;
+        uint256 price = sane ? uint256(answer) : 0;
 
-        (uint256 price, uint8 skipReason) = _verifyFeed(m_.feed, m_.kind, m_.bound);
-        if (skipReason != 0) {
-            emit GuardSkipped(m_.kind, m_.feed, m_.asset, skipReason);
-            return;
-        }
+        for (uint256 i = 0; i < items_.length; i++) {
+            GuardItem calldata it = items_[i];
 
-        address vault = guardVaultOf[m_.asset];
-        if (vault == address(0)) revert GuardNotConfigured();
+            if (it.kind == GUARD_PAUSE) {
+                guardPaused[asset_] = true;
+                emit GuardPaused(asset_, feed_);
+                continue;
+            }
+            if (it.kind == GUARD_RESUME) {
+                guardPaused[asset_] = false;
+                emit GuardResumed(asset_, feed_);
+                continue;
+            }
+            if (it.kind != GUARD_TRIM && it.kind != GUARD_EXIT && it.kind != GUARD_REBUY) revert BadGuardKind();
 
-        uint256 inAmt;
-        uint256 outAmt;
-        if (m_.kind == GUARD_TRIM) {
-            (inAmt, outAmt) = IGuardVault(vault).guardTrim(m_.param, m_.param2);
-        } else if (m_.kind == GUARD_EXIT) {
-            (inAmt, outAmt) = IGuardVault(vault).guardExit(m_.param);
-        } else {
-            (inAmt, outAmt) = IGuardVault(vault).guardRebuy(m_.param, m_.param2);
-        }
+            if (guardPaused[asset_]) {
+                emit GuardSkipped(it.kind, feed_, asset_, GUARD_SKIP_PAUSED);
+                continue;
+            }
+            if (!fresh) {
+                emit GuardSkipped(it.kind, feed_, asset_, GUARD_SKIP_STALE);
+                continue;
+            }
+            if (it.kind == GUARD_EXIT && price > it.bound) {
+                emit GuardSkipped(it.kind, feed_, asset_, GUARD_SKIP_RECOVERED);
+                continue;
+            }
+            if (!guardVaultKnown[it.vault]) {
+                emit GuardSkipped(it.kind, feed_, asset_, GUARD_SKIP_VAULT);
+                continue;
+            }
 
-        if (inAmt == 0 && outAmt == 0) {
-            return; // inside the band: a no-op is not a served action
-        }
+            (bool ok, bytes memory ret) = it.kind == GUARD_EXIT
+                ? it.vault.call(abi.encodeWithSelector(IGuardVault.guardExit.selector, it.param))
+                : ((it.kind == GUARD_TRIM)
+                        ? it.vault.call(abi.encodeWithSelector(IGuardVault.guardTrim.selector, it.param, it.param2))
+                        : it.vault.call(abi.encodeWithSelector(IGuardVault.guardRebuy.selector, it.param, it.param2)));
+            if (!ok) {
+                emit GuardSkipped(it.kind, feed_, asset_, GUARD_SKIP_VAULT_FAILED);
+                continue;
+            }
+            (uint256 inAmt, uint256 outAmt) = abi.decode(ret, (uint256, uint256));
+            if (inAmt == 0 && outAmt == 0) {
+                continue; // inside the band: a no-op is not a served action
+            }
 
-        // P9: the causal-feed event precedes the external billing call.
-        emit GuardActed(m_.kind, m_.asset, price, inAmt, outAmt);
+            // P9: the causal-feed event precedes the external billing call.
+            emit GuardActed(it.kind, asset_, price, inAmt, outAmt);
 
-        // Pay-on-delivery (ADR-GAS): bill the served safe only.
-        (bool ok,) = vault.call(abi.encodeWithSignature("chargeFee(uint256)", feePerActionWei));
-        if (ok) {
-            feesBilled += feePerActionWei;
-        } else {
-            emit VaultUnpaid(vault);
+            // Pay-on-delivery (ADR-GAS): bill the served safe only.
+            (bool okFee,) = it.vault.call(abi.encodeWithSignature("chargeFee(uint256)", feePerActionWei));
+            if (okFee) {
+                feesBilled += feePerActionWei;
+            } else {
+                emit VaultUnpaid(it.vault);
+            }
         }
         _sweepMargin();
         _checkEth();

@@ -3,7 +3,7 @@ pragma solidity ^0.8.29;
 
 import {Test} from "forge-std/Test.sol";
 import {RulesEngine} from "../src/RulesEngine.sol";
-import {GuardMsg} from "../src/IGuardVault.sol";
+import {GuardItem} from "../src/IGuardVault.sol";
 import {Executor, IExecutorVault} from "../src/Executor.sol";
 import {AssetVault} from "../src/AssetVault.sol";
 import {GasVault} from "../src/GasVault.sol";
@@ -51,6 +51,7 @@ contract GuardBrainTest is Test {
     address executor = makeAddr("executor");
     address feed = makeAddr("tslaFeed");
     address asset = makeAddr("tsla");
+    address vault = makeAddr("guardVault");
     uint256 blockN = 1000;
 
     // brain events (mirror)
@@ -78,6 +79,7 @@ contract GuardBrainTest is Test {
         p.chainId = GUARD_CHAIN;
         p.feed = feed_;
         p.asset = asset_;
+        p.vault = vault;
         p.destChainId = GUARD_CHAIN;
         p.entryRef = ENTRY;
         p.warnBps = WARN;
@@ -136,21 +138,8 @@ contract GuardBrainTest is Test {
         );
     }
 
-    function _msg(address feed_, uint8 kind, uint256 param, uint256 param2, uint256 bound, uint256 originBlock)
-        internal
-        view
-        returns (GuardMsg memory m)
-    {
-        m.sender = address(0);
-        m.feed = feed_;
-        m.asset = asset;
-        m.kind = kind;
-        m.param = param;
-        m.param2 = param2;
-        m.bound = bound;
-        m.originBlockNumber = originBlock;
-    }
-
+    /// @dev The expected flat batch: one item; PAUSE/RESUME items are
+    ///      feed-level (vault = 0).
     function _expectedPayload(
         address feed_,
         uint8 kind,
@@ -159,9 +148,17 @@ contract GuardBrainTest is Test {
         uint256 bound,
         uint256 originBlock
     ) internal view returns (bytes memory) {
+        GuardItem[] memory items = new GuardItem[](1);
+        items[0] = GuardItem({
+            vault: (kind == 4 || kind == 5) ? address(0) : vault, kind: kind, param: param, param2: param2, bound: bound
+        });
         return abi.encodeWithSignature(
-            "guardAction((address,address,address,uint8,uint256,uint256,uint256,uint256))",
-            _msg(feed_, kind, param, param2, bound, originBlock)
+            "guardAction(address,address,address,uint256,(address,uint8,uint256,uint256,uint256)[])",
+            address(0), // the sender placeholder, substituted at delivery
+            feed_,
+            asset,
+            originBlock,
+            items
         );
     }
 
@@ -192,14 +189,15 @@ contract GuardBrainTest is Test {
         assertEq(sTopic0, ANSWER_UPDATED);
 
         assertTrue(engine.guardActiveOf(GUARD_CHAIN, feed));
-        (address gAsset, uint256 destChain, uint64 warn, uint64 mid, uint64 hard,,,,) =
-            engine.guardConfigOf(GUARD_CHAIN, feed);
+        (address gVault, address gAsset, uint256 destChain, uint64 warn, uint64 mid, uint64 hard,,,,) =
+            engine.guardClientConfigOf(GUARD_CHAIN, feed, vault);
+        assertEq(gVault, vault, "the client rule names its vault");
         assertEq(gAsset, asset);
         assertEq(destChain, GUARD_CHAIN);
         assertEq(warn, WARN);
         assertEq(mid, MID);
         assertEq(hard, HARD);
-        assertEq(engine.guardHwmOf(GUARD_CHAIN, feed), ENTRY, "anchor starts at entry");
+        assertEq(engine.guardHwmOf(GUARD_CHAIN, feed, vault), ENTRY, "anchor starts at entry");
     }
 
     function testSetGuardRule_RejectsBadLadder() public {
@@ -217,7 +215,7 @@ contract GuardBrainTest is Test {
         _setGuardRule();
         uint256 before = sys.callbackCount();
         _reactFeed(120e8, block.timestamp, blockN, feed);
-        assertEq(engine.guardHwmOf(GUARD_CHAIN, feed), 120e8, "hwm follows the high");
+        assertEq(engine.guardHwmOf(GUARD_CHAIN, feed, vault), 120e8, "hwm follows the high");
         assertEq(sys.callbackCount(), before, "no fire on a rise");
     }
 
@@ -241,8 +239,8 @@ contract GuardBrainTest is Test {
             _hasRequest(_expectedPayload(feed, 1, TARGET, BAND, 114e8, blockN + 1)),
             "TRIM callback: target/band + the warn trigger price 120e8*0.95"
         );
-        assertEq(engine.guardHwmOf(GUARD_CHAIN, feed), 120e8, "hwm unchanged on a dip");
-        assertEq(engine.guardRungOf(GUARD_CHAIN, feed), 1);
+        assertEq(engine.guardHwmOf(GUARD_CHAIN, feed, vault), 120e8, "hwm unchanged on a dip");
+        assertEq(engine.guardRungOf(GUARD_CHAIN, feed, vault), 1);
     }
 
     function testDeepening_BypassesCooldown() public {
@@ -342,7 +340,7 @@ contract GuardBrainTest is Test {
         _reactFeed(90e8, block.timestamp, blockN, feed); // rung 2 on feed A
         _reactFeed(120e8, block.timestamp, blockN, feedB); // new high on feed B
 
-        assertEq(engine.guardHwmOf(GUARD_CHAIN, feedB), 120e8, "feed B was evaluated too");
+        assertEq(engine.guardHwmOf(GUARD_CHAIN, feedB, vault), 120e8, "feed B was evaluated too");
         assertTrue(_hasRequest(_expectedPayload(feed, 2, 5_000, 0, 90e8, blockN)), "feed A fired its rung");
     }
 
@@ -352,7 +350,7 @@ contract GuardBrainTest is Test {
         uint256 before = sys.callbackCount();
         _reactFeed(0, block.timestamp, blockN + 1, feed); // zero answer
         _reactFeed(uint256(int256(-5e8)), block.timestamp, blockN + 2, feed); // negative answer
-        assertEq(engine.guardHwmOf(GUARD_CHAIN, feed), 100e8, "no state corruption on a bad answer");
+        assertEq(engine.guardHwmOf(GUARD_CHAIN, feed, vault), 100e8, "no state corruption on a bad answer");
         assertEq(sys.callbackCount(), before, "no fires on a bad answer");
         assertEq(engine.guardLastUpdateOf(GUARD_CHAIN, feed), block.timestamp, "lastUpdate untouched by a bad answer");
     }
@@ -405,23 +403,11 @@ contract GuardExecutorTest is Test {
     }
 
     function _guard(uint8 kind, uint256 param, uint256 param2, uint256 bound) internal {
+        GuardItem[] memory items = new GuardItem[](1);
+        items[0] = GuardItem({vault: address(guardVault), kind: kind, param: param, param2: param2, bound: bound});
         vm.prank(proxy);
-        executor.guardAction(_msg(address(feed), kind, param, param2, bound, 77));
-    }
-
-    function _msg(address feed_, uint8 kind, uint256 param, uint256 param2, uint256 bound, uint256 originBlock)
-        internal
-        view
-        returns (GuardMsg memory m)
-    {
-        m.sender = rulesEngine; // the network slot-substitution result
-        m.feed = feed_;
-        m.asset = asset;
-        m.kind = kind;
-        m.param = param;
-        m.param2 = param2;
-        m.bound = bound;
-        m.originBlockNumber = originBlock;
+        // the wire is flat: sender first (the network substitution slot)
+        executor.guardAction(rulesEngine, address(feed), asset, 77, items);
     }
 
     function testGuardTrim_ActsAndBills() public {
@@ -500,15 +486,15 @@ contract GuardExecutorTest is Test {
 
     function testOnlyBrain_CanSend() public {
         feed.setRound(100e8, block.timestamp);
-        GuardMsg memory m = _msg(address(feed), TRIM, 5000, 1000, 0, 77);
-        m.sender = makeAddr("fake");
+        GuardItem[] memory items = new GuardItem[](1);
+        items[0] = GuardItem({vault: address(guardVault), kind: TRIM, param: 5000, param2: 1000, bound: 0});
+        address fake = makeAddr("fake");
         vm.prank(proxy);
-        vm.expectRevert(abi.encodeWithSignature("CallbackNotAuthorized(address,address)", m.sender, rulesEngine));
-        executor.guardAction(m);
+        vm.expectRevert(abi.encodeWithSignature("CallbackNotAuthorized(address,address)", fake, rulesEngine));
+        executor.guardAction(fake, address(feed), asset, 77, items);
 
-        m.sender = rulesEngine;
         vm.prank(makeAddr("stranger"));
         vm.expectRevert(abi.encodeWithSignature("NotAuthorized(address,address)", makeAddr("stranger"), proxy));
-        executor.guardAction(m);
+        executor.guardAction(rulesEngine, address(feed), asset, 77, items);
     }
 }

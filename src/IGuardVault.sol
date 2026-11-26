@@ -1,20 +1,23 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.29;
 
-/// @notice The brain → executor guard message (single flat static
-///         struct: one stack slot instead of eight arguments, the
-///         byte layout is identical to the flat ABI encoding — the
-///         network's first-payload-slot substitution (the sender
-///         field) keeps working, W2.2 canon).
-struct GuardMsg {
-    address sender; // substituted by the network at delivery
-    address feed; // the Chainlink emitter (origin chain)
-    address asset; // the stock token inside the guard safe
+/// @notice One item of the brain → executor guard batch (D-2611-3:
+///         multi-client). One price event → ONE callback → a batch of
+///         every client whose ladder fired (REACT burn stays
+///         independent of the client count).
+/// @dev The wire format is FLAT on purpose: guardAction(sender, feed,
+///      asset, originBlockNumber, items) — the sender is the FIRST
+///      32-byte slot of the encoded args, exactly where the delivery
+///      network's first-payload-slot substitution (W2.2 canon) writes
+///      the callback sender. A wrapper-tuple argument would prepend an
+///      offset word and the substitution would corrupt the encoding
+///      (caught by the first-slot red test, 26.11).
+struct GuardItem {
+    address vault; // the client's guard safe on the destination chain
     uint8 kind; // 1 trim, 2 exit, 3 rebuy, 4 pause, 5 resume
     uint256 param; // kind-specific (targetBps / fractionBps)
     uint256 param2; // bandBps for trim/rebuy
-    uint256 bound; // the trigger price for the EXIT verification
-    uint256 originBlockNumber; // the causal-feed block
+    uint256 bound; // the trigger price for the EXIT re-verification
 }
 
 /// @title IGuardVault — the two-sided safe of the guard vertical
