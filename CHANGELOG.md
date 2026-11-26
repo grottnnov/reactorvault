@@ -3,6 +3,44 @@
 All notable changes to ReactorVault. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 the contract family has no releases yet — versions name stand generations.
 
+## [Unreleased] — the Robinhood Chain exchange leg (26.11)
+
+The guard's HOW gets a live exchange: real TSLA→USDG swaps through the
+Uniswap v4 singleton on chain 4663, proven on a live mainnet fork.
+
+### Added
+- **`UniswapV4RhSwapAdapter`** (ISwapAdapter, ADR-EXPANSION §4): talks
+  to the Robinhood Chain PoolManager DIRECTLY, bypassing the forked
+  Universal Router entirely (the router fork adds an undocumented
+  `minHopPriceX36` word to every v4 swap input — stock SDK calldata
+  reverts — while the PoolManager itself speaks the plain
+  monorepo-era v4 ABI; verified against the live bytecode and the
+  Blockscout-verified source). One hookless pool per pair pinned by
+  measurement; the fill is bound against minOut BEFORE any
+  settlement, payment is exact-delta, `take()` pays the original
+  caller (the safe) — the adapter holds nothing between calls. The
+  unlock callback is pool-manager-only (incident-#19 canon).
+- **`script/rh-pool-discovery.sh`**: enumerates every
+  `Initialize` for the pair on the live chain (the full-topic getLogs
+  trick — the RH RPC silently empties wide topic-filtered ranges),
+  ranks pools by StateView liquidity/depth, filters hookless with a
+  sane fee, prints the chosen PoolKey with sources. Chose
+  TSLA/USDG fee 3000 / tickSpacing 60 / no hook, ~$3.0M deep
+  (116 pools found; the rest is launchpad spam at L=0).
+- **`test/fork/RhV4SwapAdapter.t.sol`**: live-fork proof — real
+  sell, real rebuy, the slippage bound reverting cleanly, the quote
+  cross-checked against the pool's own slot0 (a quote above the
+  frictionless amount is impossible; >1.5% below it is broken).
+  Skips without `RH_RPC` (CI gets the public RPC).
+
+### Changed
+- **`ISwapAdapter.getAmountOut` is no longer `view`**: the Robinhood
+  V4Quoter delivers quotes through a caught revert inside
+  `poolManager.unlock`, and both steps write transient storage — a
+  staticcall dies with an empty revert (measured live: eth_call
+  fails, a transaction call returns the quote). `GuardVault` is
+  unaffected — it quotes from non-view action paths only.
+
 ## [Unreleased] — the guard rules and the two-sided safe (25.11, ADR-GUARD-RULES)
 
 The Robinhood risk guardian lands in the code: the brain computes WHEN from

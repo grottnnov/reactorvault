@@ -30,7 +30,7 @@ contract MockSwapAdapter is ISwapAdapter {
     /// @dev The QUOTE is clean rate math — the spread models real
     ///      slippage: it hits the FILL, not the quote (that is what
     ///      makes the vault's minOut meaningful).
-    function getAmountOut(address tokenIn, address, uint256 amountIn) external view override returns (uint256) {
+    function getAmountOut(address tokenIn, address, uint256 amountIn) external override returns (uint256) {
         if (tokenIn == asset) {
             // asset(1e18) → stable(1e6): value = amountIn × price / 1e20
             return amountIn * price / 1e20;
