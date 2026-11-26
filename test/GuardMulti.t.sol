@@ -136,7 +136,13 @@ contract GuardMultiTest is Test {
                 topic1: uint256(uint160(client)),
                 topic2: uint256(uint160(vault)),
                 topic3: uint256(uint160(asset)),
-                data: abi.encode(feed, uint8(1), entryRef, WARN, MID, HARD, TARGET, BAND, GUARD_COOLDOWN, MAX_STALE),
+                data: abi.encode(
+                    feed,
+                    uint8(1),
+                    entryRef,
+                    uint256(WARN) | (uint256(MID) << 64) | (uint256(HARD) << 128) | (uint256(TARGET) << 192),
+                    uint256(BAND) | (uint256(GUARD_COOLDOWN) << 64) | (uint256(MAX_STALE) << 128)
+                ),
                 blockNumber: blockNumber,
                 opCode: 0,
                 blockHash: 0,
